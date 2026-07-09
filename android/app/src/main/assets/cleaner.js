@@ -1,5 +1,5 @@
 (function () {
-  var VERSION = 3;
+  var VERSION = 4;
   if (window.__cyclingTodayCleanPlayer && window.__cyclingTodayCleanPlayer.version === VERSION) {
     try { window.__cyclingTodayCleanPlayer.apply(); } catch (ignore) {}
     return;
@@ -14,13 +14,19 @@
   };
 
   var blockedHostPattern = /(2mdn|adform|adnxs|adskeeper|adsterra|advertising|amazon-adsystem|analytics\.google|casalemedia|contextweb|criteo|doubleclick|exoclick|googlesyndication|googletagmanager|googletagservices|google-analytics|googleadservices|imasdk|mgid|onclickads|openx|outbrain|popads|popcash|propellerads|pubmatic|quantserve|revcontent|rubiconproject|scorecardresearch|taboola|trafficjunky|yllix|adsrvr|adroll|adservice|adsafeprotected|bluekai|demdex|everesttech|indexww|lijit|media\.net|moatads|sharethrough|smartadserver|spotxchange|springserve|teads|themoneytizer|yieldmo|zedo|zeotap|onesignal|twitter|x\.com|facebook|instagram)/i;
-  var playerHintPattern = /(reformyoung|player|stream|embed|live|video|jwplayer|dailymotion|youtube|vimeo|twitch|cloudfront|fastly|hls|dash|m3u8|\/e\/)/i;
+  var playerHintPattern = /(reformyoung|merithotdog|player|stream|embed|live|video|jwplayer|dailymotion|twitch|cloudfront|fastly|hls|dash|m3u8|\/e\/)/i;
+  var liveEmbedPattern = /(reformyoung|merithotdog|\/e\/[a-z0-9_-]+|embed\/[a-z0-9_-]+|player|stream|live|m3u8|hls)/i;
+  var nonLiveVideoHostPattern = /(^|\.)((youtube(-nocookie)?\.com)|(youtu\.be)|(vimeo\.com))$/i;
   var negativeFramePattern = /(chat|comment|poll|prediction|twitter|x\.com|facebook|instagram|telegram|discord|disqus|newsletter|googlesyndication|doubleclick|googleads|aswift)/i;
   var adLabelPattern = /(^|[\s_-])(ad|ads|advert|advertisement|sponsor|sponsored|banner|popup|popunder|overlay|sticky|outbrain|taboola|mgid|revcontent|adunit|ad-slot|native-ad)([\s_-]|$)/i;
   var focusing = false;
 
   function hostOf(url) {
     try { return new URL(url, location.href).hostname || ''; } catch (ignore) { return ''; }
+  }
+
+  function frameSrc(frame) {
+    return frame.src || frame.getAttribute('src') || frame.getAttribute('data-src') || frame.getAttribute('data-lazy-src') || '';
   }
 
   function isCyclingToday() {
@@ -84,7 +90,7 @@
     var width = Math.max(rect.width, 0);
     var height = Math.max(rect.height, 0);
     var area = width * height;
-    var src = frame.src || frame.getAttribute('src') || '';
+    var src = frameSrc(frame);
     var host = hostOf(src);
     var allow = frame.getAttribute('allow') || '';
     var label = [src, host, allow, frame.id || '', frame.className || '', frame.name || ''].join(' ').toLowerCase();
@@ -93,16 +99,17 @@
       return -1;
     }
 
-    if (blockedHostPattern.test(host) || negativeFramePattern.test(label)) {
+    if (blockedHostPattern.test(host) || nonLiveVideoHostPattern.test(host) || negativeFramePattern.test(label)) {
       return -1;
     }
 
     var score = area;
     if (playerHintPattern.test(label)) { score += area * 3; }
+    if (liveEmbedPattern.test(label)) { score += area * 4; }
     if (/autoplay|fullscreen|encrypted-media|picture-in-picture/i.test(allow)) { score += area * 1.5; }
     if (frame.hasAttribute('allowfullscreen')) { score += area; }
     if (width >= 300 && height >= 160 && width / Math.max(height, 1) >= 1.2) { score += area; }
-    if (/reformyoung/i.test(label)) { score += area * 5; }
+    if (/reformyoung|merithotdog/i.test(label)) { score += area * 6; }
     if (/ad|ads|banner|sponsor|popup|tracking/i.test(label)) { score -= area * 2; }
 
     return score;
@@ -226,7 +233,7 @@
     var rect = player.getBoundingClientRect();
     state.found = true;
     state.reason = 'ok';
-    state.src = player.src || player.getAttribute('src') || '';
+    state.src = frameSrc(player);
     state.rect = {
       left: Math.max(0, rect.left),
       top: Math.max(0, rect.top),

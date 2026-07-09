@@ -65,6 +65,12 @@ internal sealed class CleanPlayerForm : Form
             "last-run.log");
         ResetLog();
 
+        System.Drawing.Icon appIcon = LoadAppIcon();
+        if (appIcon != null)
+        {
+            Icon = appIcon;
+        }
+
         webView = new WebView2();
         webView.Dock = DockStyle.Fill;
         webView.DefaultBackgroundColor = Color.Black;
@@ -145,6 +151,43 @@ internal sealed class CleanPlayerForm : Form
 
         Log("Mode: cleaner=" + enableCleaner + " blocking=" + enableBlocking + " autoClick=" + enableAutoClick);
     }
+
+    private System.Drawing.Icon LoadAppIcon()
+    {
+        string[] candidates =
+        {
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico"),
+            Path.Combine(Application.StartupPath, "app.ico"),
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "windows", "app.ico")
+        };
+
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            string path = candidates[i];
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            try
+            {
+                return new System.Drawing.Icon(path);
+            }
+            catch
+            {
+            }
+        }
+
+        try
+        {
+            return System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private string LoadCleanerScript()
     {
         string[] candidates =
@@ -600,7 +643,8 @@ internal sealed class CleanPlayerForm : Form
             "twitter.com",
             "x.com",
             "facebook.com",
-            "instagram.com",            "amazon-adsystem.com",
+            "instagram.com",
+            "amazon-adsystem.com",
             "analytics.google.com",
             "casalemedia.com",
             "cloudfront-labs.amazonaws.com",

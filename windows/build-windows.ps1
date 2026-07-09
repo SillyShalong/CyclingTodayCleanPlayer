@@ -73,9 +73,11 @@ $webViewCore = Join-Path $packageRoot "lib\net462\Microsoft.Web.WebView2.Core.dl
 $webViewForms = Join-Path $packageRoot "lib\net462\Microsoft.Web.WebView2.WinForms.dll"
 $loader = Join-Path $packageRoot "runtimes\win-x64\native\WebView2Loader.dll"
 $cleaner = Join-Path $ProjectRoot "cleaner.js"
+$icon = Join-Path $ProjectRoot "app.ico"
 
 & $csc /nologo /target:winexe /platform:x64 /optimize+ `
     /out:$outputExe `
+    /win32icon:$icon `
     /reference:System.dll `
     /reference:System.Core.dll `
     /reference:System.Drawing.dll `
@@ -88,5 +90,6 @@ Copy-Item -LiteralPath $webViewCore -Destination (Join-Path $DistDir "Microsoft.
 Copy-Item -LiteralPath $webViewForms -Destination (Join-Path $DistDir "Microsoft.Web.WebView2.WinForms.dll") -Force
 Copy-Item -LiteralPath $loader -Destination (Join-Path $DistDir "WebView2Loader.dll") -Force
 Copy-Item -LiteralPath $cleaner -Destination (Join-Path $DistDir "cleaner.js") -Force
+Copy-Item -LiteralPath $icon -Destination (Join-Path $DistDir "app.ico") -Force
 
 Write-Host "Built: $outputExe"
