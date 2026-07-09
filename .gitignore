@@ -1,0 +1,49 @@
+# Build outputs
+windows/CyclingTodayCleanPlayer/
+build/
+dist/
+out/
+outputs/
+*.apk
+*.aab
+*.apks
+*.exe
+*.dll
+*.pdb
+*.mdb
+*.zip
+*.nupkg
+
+# Local toolchains and dependency caches
+.tools/
+.gradle/
+**/.gradle/
+**/build/
+
+# Android/Gradle local files
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE and editor state
+.idea/
+.vscode/
+*.iml
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.png
+*.jpg
+*.jpeg
+*.webp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,427 @@
+package com.lijialun.cyclingtoday;
+
+import android.Manifest;
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.content.pm.ActivityInfo;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+
+public class MainActivity extends Activity {
+    private static final String SOURCE_URL = "https://cycling.today/";
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private WebView webView;
+    private FrameLayout root;
+    private View customView;
+    private WebChromeClient.CustomViewCallback customViewCallback;
+    private boolean autoTapScheduled;
+    private int autoTapAttempts;
+
+    private static final Set<String> BLOCKED_HOSTS = new HashSet<>(Arrays.asList(
+            "2mdn.net",
+            "adform.net",
+            "adnxs.com",
+            "adskeeper.com",
+            "adsterra.com",
+            "advertising.com",
+            "adroll.com",
+            "adservice.google.com",
+            "adsafeprotected.com",
+            "adsrvr.org",
+            "adtrafficquality.google",
+            "bluekai.com",
+            "demdex.net",
+            "everesttech.net",
+            "indexww.com",
+            "lijit.com",
+            "media.net",
+            "moatads.com",
+            "sharethrough.com",
+            "smartadserver.com",
+            "spotxchange.com",
+            "springserve.com",
+            "teads.tv",
+            "themoneytizer.com",
+            "yieldmo.com",
+            "zedo.com",
+            "zeotap.com",
+            "onesignal.com",
+            "platform.twitter.com",
+            "syndication.twitter.com",
+            "twitter.com",
+            "x.com",
+            "facebook.com",
+            "instagram.com",            "amazon-adsystem.com",
+            "analytics.google.com",
+            "casalemedia.com",
+            "contextweb.com",
+            "criteo.com",
+            "criteo.net",
+            "doubleclick.net",
+            "exoclick.com",
+            "googlesyndication.com",
+            "googletagmanager.com",
+            "googletagservices.com",
+            "google-analytics.com",
+            "googleadservices.com",
+            "imasdk.googleapis.com",
+            "mgid.com",
+            "onclickads.net",
+            "openx.net",
+            "outbrain.com",
+            "popads.net",
+            "popcash.net",
+            "propellerads.com",
+            "pubmatic.com",
+            "quantserve.com",
+            "revcontent.com",
+            "rubiconproject.com",
+            "scorecardresearch.com",
+            "taboola.com",
+            "trafficjunky.net",
+            "yllix.com"
+    ));
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
+        getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+
+        root = new FrameLayout(this);
+        root.setBackgroundColor(0xff000000);
+        setContentView(root);
+        enterImmersiveMode();
+        createWebView();
+        webView.loadUrl(SOURCE_URL);
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private void createWebView() {
+        webView = new WebView(this);
+        webView.setBackgroundColor(0xff000000);
+        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        webView.setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
+
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setLoadWithOverviewMode(true);
+        settings.setUseWideViewPort(true);
+        settings.setSupportMultipleWindows(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+
+        webView.setWebViewClient(new CleanWebViewClient());
+        webView.setWebChromeClient(new CleanChromeClient());
+
+        root.addView(webView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private void enterImmersiveMode() {
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+
+    private void injectCleaner() {
+        try {
+            String script = readAsset("cleaner.js");
+            webView.evaluateJavascript(script, null);
+        } catch (IOException ignored) {
+        }
+    }
+
+    private String readAsset(String name) throws IOException {
+        InputStream input = getAssets().open(name);
+        byte[] buffer = new byte[input.available()];
+        int read = input.read(buffer);
+        input.close();
+        if (read <= 0) {
+            return "";
+        }
+        return new String(buffer, 0, read, StandardCharsets.UTF_8);
+    }
+
+    private final Runnable autoTapRunnable = new Runnable() {
+        @Override
+        public void run() {
+            sendAutoUnmuteTap();
+        }
+    };
+
+    private void scheduleAutoUnmuteTap() {
+        if (autoTapScheduled) {
+            return;
+        }
+        autoTapScheduled = true;
+        autoTapAttempts = 0;
+        handler.postDelayed(autoTapRunnable, 8000);
+    }
+
+    private void sendAutoUnmuteTap() {
+        autoTapAttempts++;
+        if (webView == null || webView.getWidth() <= 0 || webView.getHeight() <= 0) {
+            return;
+        }
+
+        String script = "(function(){var h=window.__cyclingTodayCleanPlayer;if(!h||!h.getClickPointText){return '';}return h.getClickPointText();})()";
+        webView.evaluateJavascript(script, new ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String value) {
+                List<float[]> points = parseClickPoints(decodeScriptString(value));
+                if (points.isEmpty()) {
+                    if (autoTapAttempts < 18) {
+                        handler.postDelayed(autoTapRunnable, 1000);
+                    }
+                    return;
+                }
+
+                int limit = Math.min(points.size(), 4);
+                for (int i = 0; i < limit; i++) {
+                    float[] point = points.get(i);
+                    tapWebView(point[0], point[1]);
+                }
+            }
+        });
+    }
+
+    private List<float[]> parseClickPoints(String text) {
+        List<float[]> points = new ArrayList<>();
+        if (text == null || text.trim().length() == 0 || webView == null) {
+            return points;
+        }
+
+        String[] pairs = text.split("\\|");
+        for (String pair : pairs) {
+            String[] parts = pair.split(",");
+            if (parts.length != 2) {
+                continue;
+            }
+
+            try {
+                float rawX = Float.parseFloat(parts[0]);
+                float rawY = Float.parseFloat(parts[1]);
+                float maxX = Math.max(10f, webView.getWidth() - 10f);
+                float maxY = Math.max(10f, webView.getHeight() - 10f);
+                float x = Math.max(10f, Math.min(maxX, rawX));
+                float y = Math.max(10f, Math.min(maxY, rawY));
+
+                boolean duplicate = false;
+                for (float[] existing : points) {
+                    if (Math.abs(existing[0] - x) < 4f && Math.abs(existing[1] - y) < 4f) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    points.add(new float[]{x, y});
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+
+        return points;
+    }
+
+    private String decodeScriptString(String value) {
+        if (value == null || value.equals("null")) {
+            return "";
+        }
+
+        String decoded = value;
+        if (decoded.length() >= 2 && decoded.charAt(0) == '"' && decoded.charAt(decoded.length() - 1) == '"') {
+            decoded = decoded.substring(1, decoded.length() - 1);
+        }
+
+        decoded = decoded.replace("\\\"", "\"");
+        decoded = decoded.replace("\\\\", "\\");
+        decoded = decoded.replace("\\n", "\n");
+        decoded = decoded.replace("\\r", "\r");
+        decoded = decoded.replace("\\t", "\t");
+        return decoded;
+    }
+
+    private void tapWebView(float x, float y) {
+        long now = SystemClock.uptimeMillis();
+        MotionEvent down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0);
+        MotionEvent up = MotionEvent.obtain(now, now + 80, MotionEvent.ACTION_UP, x, y, 0);
+        webView.dispatchTouchEvent(down);
+        webView.dispatchTouchEvent(up);
+        down.recycle();
+        up.recycle();
+    }
+    private boolean isAllowedTopLevel(Uri uri) {
+        String host = uri.getHost();
+        if (host == null) {
+            return false;
+        }
+        host = host.toLowerCase(Locale.US);
+        return host.equals("cycling.today") || host.equals("www.cycling.today");
+    }
+
+    private boolean isBlocked(Uri uri) {
+        String host = uri.getHost();
+        if (host == null) {
+            return false;
+        }
+
+        host = host.toLowerCase(Locale.US);
+        for (String blocked : BLOCKED_HOSTS) {
+            if (host.equals(blocked) || host.endsWith("." + blocked)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private WebResourceResponse emptyResponse() {
+        HashMap<String, String> headers = new HashMap<>();
+        headers.put("Access-Control-Allow-Origin", "*");
+        headers.put("Cache-Control", "no-store");
+        return new WebResourceResponse(
+                "text/plain",
+                "utf-8",
+                204,
+                "No Content",
+                headers,
+                new ByteArrayInputStream(new byte[0]));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        enterImmersiveMode();
+        if (webView != null) {
+            webView.onResume();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (webView != null) {
+            webView.onPause();
+        }
+        super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        if (webView != null) {
+            root.removeView(webView);
+            webView.destroy();
+        }
+        super.onDestroy();
+    }
+
+    private final class CleanWebViewClient extends WebViewClient {
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            Uri uri = request.getUrl();
+            if (uri == null) {
+                return true;
+            }
+            if (request.isForMainFrame()) {
+                return !isAllowedTopLevel(uri);
+            }
+            return isBlocked(uri);
+        }
+
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            Uri uri = request.getUrl();
+            if (uri != null && isBlocked(uri)) {
+                return emptyResponse();
+            }
+            return super.shouldInterceptRequest(view, request);
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            injectCleaner();
+            scheduleAutoUnmuteTap();
+        }
+    }
+
+    private final class CleanChromeClient extends WebChromeClient {
+        @Override
+        public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
+            return false;
+        }
+
+        @Override
+        public void onPermissionRequest(PermissionRequest request) {
+            request.deny();
+        }
+
+        @Override
+        public void onShowCustomView(View view, CustomViewCallback callback) {
+            if (customView != null) {
+                callback.onCustomViewHidden();
+                return;
+            }
+            customView = view;
+            customViewCallback = callback;
+            root.addView(customView, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            webView.setVisibility(View.GONE);
+            enterImmersiveMode();
+        }
+
+        @Override
+        public void onHideCustomView() {
+            if (customView == null) {
+                return;
+            }
+            root.removeView(customView);
+            customView = null;
+            if (customViewCallback != null) {
+                customViewCallback.onCustomViewHidden();
+                customViewCallback = null;
+            }
+            webView.setVisibility(View.VISIBLE);
+            enterImmersiveMode();
+        }
+    }
+}
