@@ -86,6 +86,10 @@ $icon = Join-Path $ProjectRoot "app.ico"
     /reference:$webViewForms `
     $source
 
+if ($LASTEXITCODE -ne 0) {
+    throw "C# build failed with exit code $LASTEXITCODE"
+}
+
 Copy-Item -LiteralPath $webViewCore -Destination (Join-Path $DistDir "Microsoft.Web.WebView2.Core.dll") -Force
 Copy-Item -LiteralPath $webViewForms -Destination (Join-Path $DistDir "Microsoft.Web.WebView2.WinForms.dll") -Force
 Copy-Item -LiteralPath $loader -Destination (Join-Path $DistDir "WebView2Loader.dll") -Force

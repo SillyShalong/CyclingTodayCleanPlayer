@@ -25,8 +25,12 @@ internal sealed class CleanPlayerForm : Form
     private const string SourcePageUrl = "https://cycling.today/";
     private const string BuiltInFallbackPlayerUrl = "https://merithotdog.net/e/vggq46c2zw56n";
     private const int FallbackDelayMilliseconds = 4500;
+    private const int MaxVisibleLogLines = 4;
     private const uint MouseEventLeftDown = 0x0002;
     private const uint MouseEventLeftUp = 0x0004;
+    private const uint ExecutionStateContinuous = 0x80000000;
+    private const uint ExecutionStateSystemRequired = 0x00000001;
+    private const uint ExecutionStateDisplayRequired = 0x00000002;
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -37,12 +41,21 @@ internal sealed class CleanPlayerForm : Form
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 
+    [DllImport("kernel32.dll")]
+    private static extern uint SetThreadExecutionState(uint esFlags);
+
     private readonly WebView2 webView;
     private readonly HashSet<string> blockedHosts;
     private readonly string logPath;
     private readonly bool enableCleaner;
     private readonly bool enableBlocking;
     private readonly bool enableAutoClick;
+    private readonly List<string> visibleLogLines = new List<string>();
+    private TableLayoutPanel mainLayout;
+    private Control statusPanel;
+    private Label statusLabel;
+    private Button unmuteButton;
+    private Button reloadButton;
     private FormBorderStyle previousBorderStyle;
     private FormWindowState previousWindowState;
     private bool fullScreen;
@@ -80,12 +93,105 @@ internal sealed class CleanPlayerForm : Form
         webView = new WebView2();
         webView.Dock = DockStyle.Fill;
         webView.DefaultBackgroundColor = Color.Black;
-        Controls.Add(webView);
+
+        TableLayoutPanel layout = new TableLayoutPanel();
+        mainLayout = layout;
+        layout.Dock = DockStyle.Fill;
+        layout.BackColor = Color.Black;
+        layout.ColumnCount = 1;
+        layout.RowCount = 2;
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 86F));
+        layout.Controls.Add(webView, 0, 0);
+        layout.Controls.Add(CreateStatusPanel(), 0, 1);
+        Controls.Add(layout);
+        AddVisibleStatus("Starting player...");
 
         Shown += async delegate { await InitializeAsync(); };
+        Activated += OnActivated;
+        FormClosed += OnFormClosed;
         KeyDown += OnKeyDown;
     }
 
+    private Control CreateStatusPanel()
+    {
+        Panel panel = new Panel();
+        panel.Dock = DockStyle.Fill;
+        panel.BackColor = Color.FromArgb(22, 22, 22);
+        panel.Padding = new Padding(10, 8, 10, 8);
+
+        FlowLayoutPanel buttons = new FlowLayoutPanel();
+        buttons.Dock = DockStyle.Right;
+        buttons.Width = 300;
+        buttons.FlowDirection = FlowDirection.LeftToRight;
+        buttons.WrapContents = false;
+        buttons.Padding = new Padding(0, 12, 0, 0);
+        buttons.BackColor = Color.Transparent;
+
+        unmuteButton = new Button();
+        unmuteButton.Text = "Unmute / Resume";
+        unmuteButton.Width = 140;
+        unmuteButton.Height = 34;
+        unmuteButton.Click += delegate { SendManualResumeClick("button"); };
+
+        reloadButton = new Button();
+        reloadButton.Text = "Refresh";
+        reloadButton.Width = 100;
+        reloadButton.Height = 34;
+        reloadButton.Click += delegate
+        {
+            NavigateToSourcePage();
+            StartFallbackWatchdogAsync();
+        };
+
+        buttons.Controls.Add(unmuteButton);
+        buttons.Controls.Add(reloadButton);
+
+        statusLabel = new Label();
+        statusLabel.Dock = DockStyle.Fill;
+        statusLabel.ForeColor = Color.Gainsboro;
+        statusLabel.BackColor = Color.Transparent;
+        statusLabel.Font = new Font("Consolas", 9F, FontStyle.Regular);
+        statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        statusLabel.AutoEllipsis = true;
+        statusLabel.Text = "Starting player...";
+
+        panel.Controls.Add(statusLabel);
+        panel.Controls.Add(buttons);
+        statusPanel = panel;
+        return panel;
+    }
+
+    private void AddVisibleStatus(string message)
+    {
+        if (String.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        string line = DateTime.Now.ToString("HH:mm:ss") + "  " + message;
+        visibleLogLines.Add(line);
+        while (visibleLogLines.Count > MaxVisibleLogLines)
+        {
+            visibleLogLines.RemoveAt(0);
+        }
+
+        if (statusLabel == null || statusLabel.IsDisposed)
+        {
+            return;
+        }
+
+        Action update = delegate { statusLabel.Text = String.Join("\r\n", visibleLogLines.ToArray()); };
+        if (statusLabel.InvokeRequired)
+        {
+            try { statusLabel.BeginInvoke(update); } catch { }
+        }
+        else
+        {
+            update();
+        }
+    }
     private async Task InitializeAsync()
     {
         try
@@ -103,6 +209,7 @@ internal sealed class CleanPlayerForm : Form
                 await CoreWebView2Environment.CreateAsync(null, userData, options);
 
             await webView.EnsureCoreWebView2Async(environment);
+            PreventSystemIdle();
             Log("WebView2 initialized");
             ConfigureWebView();
             NavigateToSourcePage();
@@ -159,6 +266,52 @@ internal sealed class CleanPlayerForm : Form
         Log("Mode: cleaner=" + enableCleaner + " blocking=" + enableBlocking + " autoClick=" + enableAutoClick);
     }
 
+    private void PreventSystemIdle()
+    {
+        try
+        {
+            SetThreadExecutionState(ExecutionStateContinuous | ExecutionStateSystemRequired | ExecutionStateDisplayRequired);
+            Log("System/display idle prevention enabled.");
+        }
+        catch
+        {
+        }
+    }
+
+    private void AllowSystemIdle()
+    {
+        try
+        {
+            SetThreadExecutionState(ExecutionStateContinuous);
+        }
+        catch
+        {
+        }
+    }
+
+    private async void SendManualResumeClick(string reason)
+    {
+        Point[] points = await GetAutoClickPointsAsync();
+        if (points.Length == 0)
+        {
+            Log("Manual resume skipped: player click points unavailable. reason=" + reason);
+            AddVisibleStatus("Resume skipped: player is not ready yet.");
+            return;
+        }
+
+        await AutoClickPlayerUnmuteAsync(points);
+        Log("Manual resume click sent. reason=" + reason);
+    }
+
+    private void OnActivated(object sender, EventArgs e)
+    {
+        PreventSystemIdle();
+    }
+
+    private void OnFormClosed(object sender, FormClosedEventArgs e)
+    {
+        AllowSystemIdle();
+    }
     private void NavigateToSourcePage()
     {
         navigationStarted = false;
@@ -168,6 +321,7 @@ internal sealed class CleanPlayerForm : Form
         autoClickScheduled = false;
         blockedRequestCount = 0;
         Log("Navigating source page: " + SourcePageUrl);
+        AddVisibleStatus("Loading Cycling Today source page...");
         webView.CoreWebView2.Navigate(SourcePageUrl);
     }
 
@@ -204,6 +358,7 @@ internal sealed class CleanPlayerForm : Form
         playerDetected = true;
         autoClickScheduled = false;
         Log("Loading fallback player. reason=" + reason + " src=" + playerUrl);
+        AddVisibleStatus("Source page is slow; switching directly to player...");
         webView.CoreWebView2.NavigateToString(BuildFallbackHtml(playerUrl));
         ScheduleAutoUnmuteClick();
     }
@@ -451,6 +606,7 @@ internal sealed class CleanPlayerForm : Form
             string result = await webView.ExecuteScriptAsync(script);
             string decoded = DecodeScriptString(result);
             Log(stage + ": " + decoded);
+            AddVisibleStatus(stage + ": " + decoded);
             if (decoded.IndexOf("playerFound=true", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 playerDetected = true;
@@ -489,15 +645,17 @@ internal sealed class CleanPlayerForm : Form
                 if (attempt == 0 || attempt == 5 || attempt == 11)
                 {
                     Log("Auto unmute waiting for player click points. attempt=" + (attempt + 1));
+                    AddVisibleStatus("Waiting for player controls before unmute. attempt=" + (attempt + 1));
                 }
                 continue;
             }
 
-            AutoClickPlayerUnmute(points);
+            await AutoClickPlayerUnmuteAsync(points);
             return;
         }
 
         Log("Auto unmute skipped: player click points unavailable.");
+        AddVisibleStatus("Auto unmute skipped: player click points unavailable. Use Refresh if needed.");
     }
 
     private async Task<Point[]> GetAutoClickPointsAsync()
@@ -589,7 +747,7 @@ internal sealed class CleanPlayerForm : Form
         return value;
     }
 
-    private void AutoClickPlayerUnmute(Point[] points)
+    private Task AutoClickPlayerUnmuteAsync(Point[] points)
     {
         try
         {
@@ -606,12 +764,15 @@ internal sealed class CleanPlayerForm : Form
                 sent++;
             }
 
-            Log("Auto unmute click sent from player rect. points=" + FormatPoints(points, sent));
+            Log("Auto unmute/resume click sent from player rect. points=" + FormatPoints(points, sent));
+            AddVisibleStatus("Unmute/resume click sent.");
         }
         catch (Exception ex)
         {
-            Log("Auto unmute click failed: " + ex.Message);
+            Log("Auto unmute/resume click failed: " + ex.Message);
         }
+
+        return Task.FromResult(0);
     }
 
     private static string FormatPoints(Point[] points, int count)
@@ -624,12 +785,33 @@ internal sealed class CleanPlayerForm : Form
 
         return String.Join("|", parts.ToArray());
     }
+
+    private void SetStatusChromeVisible(bool visible)
+    {
+        if (statusPanel != null)
+        {
+            statusPanel.Visible = visible;
+        }
+
+        if (mainLayout != null && mainLayout.RowStyles.Count > 1)
+        {
+            mainLayout.RowStyles[1].Height = visible ? 86F : 0F;
+        }
+    }
+
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
         if (e.KeyCode == Keys.F5)
         {
             NavigateToSourcePage();
             StartFallbackWatchdogAsync();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.KeyCode == Keys.R || e.KeyCode == Keys.Space)
+        {
+            SendManualResumeClick("hotkey");
             e.Handled = true;
             return;
         }
@@ -660,11 +842,13 @@ internal sealed class CleanPlayerForm : Form
         {
             previousBorderStyle = FormBorderStyle;
             previousWindowState = WindowState;
+            SetStatusChromeVisible(false);
             FormBorderStyle = FormBorderStyle.None;
             WindowState = FormWindowState.Maximized;
         }
         else
         {
+            SetStatusChromeVisible(true);
             FormBorderStyle = previousBorderStyle == 0 ? FormBorderStyle.Sizable : previousBorderStyle;
             WindowState = previousWindowState == 0 ? FormWindowState.Normal : previousWindowState;
         }
@@ -713,6 +897,11 @@ internal sealed class CleanPlayerForm : Form
         }
         catch
         {
+        }
+
+        if (message.IndexOf("Blocked request:", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            AddVisibleStatus(message);
         }
     }
 

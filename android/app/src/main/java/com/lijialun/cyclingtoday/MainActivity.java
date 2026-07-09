@@ -10,6 +10,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.MotionEvent;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -23,6 +24,9 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -43,6 +47,8 @@ public class MainActivity extends Activity {
     private WebView webView;
     private FrameLayout root;
     private View loadingCover;
+    private LinearLayout controlBar;
+    private TextView statusText;
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private String cleanerScript;
@@ -121,6 +127,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
 
         root = new FrameLayout(this);
@@ -128,6 +135,7 @@ public class MainActivity extends Activity {
         setContentView(root);
         enterImmersiveMode();
         createWebView();
+        status("Loading player...");
         webView.loadUrl(SOURCE_URL);
     }
 
@@ -161,8 +169,79 @@ public class MainActivity extends Activity {
         root.addView(loadingCover, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+
+        createControlBar();
     }
 
+    private void createControlBar() {
+        controlBar = new LinearLayout(this);
+        controlBar.setOrientation(LinearLayout.HORIZONTAL);
+        controlBar.setGravity(Gravity.CENTER_VERTICAL);
+        controlBar.setPadding(dp(10), dp(6), dp(10), dp(6));
+        controlBar.setBackgroundColor(0xcc161616);
+
+        statusText = new TextView(this);
+        statusText.setText("Loading player...");
+        statusText.setTextColor(0xffeeeeee);
+        statusText.setTextSize(12f);
+        statusText.setSingleLine(true);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        controlBar.addView(statusText, statusParams);
+
+        Button unmuteButton = new Button(this);
+        unmuteButton.setText("Unmute");
+        unmuteButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                status("Sending unmute/resume...");
+                manualUnmute();
+            }
+        });
+        controlBar.addView(unmuteButton, new LinearLayout.LayoutParams(dp(112), dp(42)));
+
+        Button refreshButton = new Button(this);
+        refreshButton.setText("Refresh");
+        refreshButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                refreshPlayer();
+            }
+        });
+        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(112), dp(42));
+        refreshParams.leftMargin = dp(8);
+        controlBar.addView(refreshButton, refreshParams);
+
+        FrameLayout.LayoutParams barParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(58),
+                Gravity.BOTTOM);
+        root.addView(controlBar, barParams);
+        controlBar.bringToFront();
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private void status(String text) {
+        if (statusText != null) {
+            statusText.setText(text);
+        }
+    }
+
+    private void refreshPlayer() {
+        if (webView == null) {
+            return;
+        }
+        status("Refreshing player...");
+        resetCleanerState();
+        webView.loadUrl(SOURCE_URL);
+    }
+
+    private void manualUnmute() {
+        autoTapAttempts = 0;
+        sendAutoUnmuteTap();
+    }
     private void enterImmersiveMode() {
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -223,6 +302,7 @@ public class MainActivity extends Activity {
         handler.removeCallbacks(autoTapRunnable);
         if (loadingCover != null) {
             loadingCover.setVisibility(View.VISIBLE);
+            status("Loading page...");
         }
     }
 
@@ -248,6 +328,7 @@ public class MainActivity extends Activity {
                     cleanerReady = true;
                     if (loadingCover != null) {
                         loadingCover.setVisibility(View.GONE);
+                        status("Player ready. Use Refresh if it freezes.");
                     }
                     scheduleAutoUnmuteTap();
                     return;
@@ -267,7 +348,7 @@ public class MainActivity extends Activity {
         handler.postDelayed(autoTapRunnable, 8000);
     }
 
-    private void sendAutoUnmuteTap() {
+private void sendAutoUnmuteTap() {
         autoTapAttempts++;
         if (webView == null || webView.getWidth() <= 0 || webView.getHeight() <= 0) {
             return;
@@ -285,11 +366,27 @@ public class MainActivity extends Activity {
                     return;
                 }
 
-                int limit = Math.min(points.size(), 4);
-                for (int i = 0; i < limit; i++) {
-                    float[] point = points.get(i);
-                    tapWebView(point[0], point[1]);
-                }
+                final List<float[]> clickPoints = points;
+                status("Sending unmute/resume...");
+                setClickShield(false);
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        int limit = Math.min(clickPoints.size(), 4);
+                        for (int i = 0; i < limit; i++) {
+                            float[] point = clickPoints.get(i);
+                            tapWebView(point[0], point[1]);
+                        }
+
+                        handler.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                setClickShield(true);
+                                status("Player ready. Use Refresh if it freezes.");
+                            }
+                        }, 900);
+                    }
+                }, 120);
             }
         });
     }

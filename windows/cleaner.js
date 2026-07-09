@@ -1,5 +1,5 @@
 (function () {
-  var VERSION = 4;
+  var VERSION = 6;
   if (window.__cyclingTodayCleanPlayer && window.__cyclingTodayCleanPlayer.version === VERSION) {
     try { window.__cyclingTodayCleanPlayer.apply(); } catch (ignore) {}
     return;
@@ -20,8 +20,7 @@
   var negativeFramePattern = /(chat|comment|poll|prediction|twitter|x\.com|facebook|instagram|telegram|discord|disqus|newsletter|googlesyndication|doubleclick|googleads|aswift)/i;
   var adLabelPattern = /(^|[\s_-])(ad|ads|advert|advertisement|sponsor|sponsored|banner|popup|popunder|overlay|sticky|outbrain|taboola|mgid|revcontent|adunit|ad-slot|native-ad)([\s_-]|$)/i;
   var focusing = false;
-
-  function hostOf(url) {
+function hostOf(url) {
     try { return new URL(url, location.href).hostname || ''; } catch (ignore) { return ''; }
   }
 
