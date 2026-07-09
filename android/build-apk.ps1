@@ -5,9 +5,10 @@ $ToolsDir = Join-Path $ProjectRoot ".tools"
 $DownloadsDir = Join-Path $ToolsDir "downloads"
 $DistDir = Join-Path $ProjectRoot "dist"
 $AndroidSdkRoot = Join-Path $ToolsDir "android-sdk"
+$GradleUserHome = Join-Path $ToolsDir "gradle-user-home"
 $GradleVersion = "8.10.2"
 
-New-Item -ItemType Directory -Force -Path $ToolsDir, $DownloadsDir, $DistDir | Out-Null
+New-Item -ItemType Directory -Force -Path $ToolsDir, $DownloadsDir, $DistDir, $GradleUserHome | Out-Null
 
 function Download-File {
     param(
@@ -147,6 +148,7 @@ $SdkHome = Ensure-Android-Sdk
 $env:JAVA_HOME = $JdkHome
 $env:ANDROID_HOME = $SdkHome
 $env:ANDROID_SDK_ROOT = $SdkHome
+$env:GRADLE_USER_HOME = $GradleUserHome
 $env:Path = "$JdkHome\bin;$SdkHome\cmdline-tools\latest\bin;$SdkHome\platform-tools;$GradleHome\bin;$env:Path"
 
 $sdkManager = Join-Path $SdkHome "cmdline-tools\latest\bin\sdkmanager.bat"
@@ -158,9 +160,14 @@ Write-Host "Accepting Android SDK licenses"
 
 $gradle = Join-Path $GradleHome "bin\gradle.bat"
 Write-Host "Building APK"
-& $gradle --no-daemon "-Dorg.gradle.java.home=$JdkHome" "-Dorg.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8" ":app:assembleDebug"
-if ($LASTEXITCODE -ne 0) {
-    throw "Gradle build failed with exit code $LASTEXITCODE"
+Push-Location $ProjectRoot
+try {
+    & $gradle --no-daemon "-Dorg.gradle.java.home=$JdkHome" "-Dorg.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8" ":app:assembleDebug"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Gradle build failed with exit code $LASTEXITCODE"
+    }
+} finally {
+    Pop-Location
 }
 
 $apk = Join-Path $ProjectRoot "app\build\outputs\apk\debug\app-debug.apk"

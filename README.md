@@ -22,6 +22,20 @@ These apps do not extract HLS or DASH streams, bypass DRM, or bypass access cont
 
 ## Build
 
+One-click build for Windows and Android:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build-all.ps1
+```
+
+You can also double-click `build-all.bat`.
+
+The one-click script downloads build dependencies into local ignored tool folders, then produces:
+
+- `windows/dist/CyclingTodayCleanPlayer.exe`
+- `windows/CyclingTodayCleanPlayer-windows.zip`
+- `android/dist/CyclingTodayAndroidPlayer-debug.apk`
+
 Windows:
 
 ```powershell

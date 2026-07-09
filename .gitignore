@@ -1,4 +1,5 @@
 # Build outputs
+.package-staging/
 windows/CyclingTodayCleanPlayer/
 build/
 dist/

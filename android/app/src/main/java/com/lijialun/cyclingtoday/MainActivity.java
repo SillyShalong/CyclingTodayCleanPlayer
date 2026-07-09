@@ -42,8 +42,12 @@ public class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private WebView webView;
     private FrameLayout root;
+    private View loadingCover;
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
+    private String cleanerScript;
+    private boolean cleanerReady;
+    private boolean cleanerPollScheduled;
     private boolean autoTapScheduled;
     private int autoTapAttempts;
 
@@ -151,6 +155,12 @@ public class MainActivity extends Activity {
         root.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+
+        loadingCover = new View(this);
+        loadingCover.setBackgroundColor(0xff000000);
+        root.addView(loadingCover, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
     private void enterImmersiveMode() {
@@ -165,10 +175,16 @@ public class MainActivity extends Activity {
 
     private void injectCleaner() {
         try {
-            String script = readAsset("cleaner.js");
-            webView.evaluateJavascript(script, null);
+            webView.evaluateJavascript(getCleanerScript(), null);
         } catch (IOException ignored) {
         }
+    }
+
+    private String getCleanerScript() throws IOException {
+        if (cleanerScript == null) {
+            cleanerScript = readAsset("cleaner.js");
+        }
+        return cleanerScript;
     }
 
     private String readAsset(String name) throws IOException {
@@ -188,6 +204,59 @@ public class MainActivity extends Activity {
             sendAutoUnmuteTap();
         }
     };
+
+    private final Runnable cleanerPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            cleanerPollScheduled = false;
+            injectCleaner();
+            checkCleanerReady();
+        }
+    };
+
+    private void resetCleanerState() {
+        cleanerReady = false;
+        cleanerPollScheduled = false;
+        autoTapScheduled = false;
+        autoTapAttempts = 0;
+        handler.removeCallbacks(cleanerPollRunnable);
+        handler.removeCallbacks(autoTapRunnable);
+        if (loadingCover != null) {
+            loadingCover.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void scheduleCleanerPoll(long delayMillis) {
+        if (cleanerReady || cleanerPollScheduled) {
+            return;
+        }
+        cleanerPollScheduled = true;
+        handler.postDelayed(cleanerPollRunnable, delayMillis);
+    }
+
+    private void checkCleanerReady() {
+        if (webView == null || cleanerReady) {
+            return;
+        }
+
+        String script = "(function(){var h=window.__cyclingTodayCleanPlayer;if(!h||!h.getStateText){return '';};h.apply&&h.apply();return h.getStateText();})()";
+        webView.evaluateJavascript(script, new ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String value) {
+                String state = decodeScriptString(value);
+                if (state.contains("playerFound=true")) {
+                    cleanerReady = true;
+                    if (loadingCover != null) {
+                        loadingCover.setVisibility(View.GONE);
+                    }
+                    scheduleAutoUnmuteTap();
+                    return;
+                }
+
+                scheduleCleanerPoll(250);
+            }
+        });
+    }
 
     private void scheduleAutoUnmuteTap() {
         if (autoTapScheduled) {
@@ -379,7 +448,20 @@ public class MainActivity extends Activity {
         @Override
         public void onPageFinished(WebView view, String url) {
             injectCleaner();
-            scheduleAutoUnmuteTap();
+            checkCleanerReady();
+        }
+
+        @Override
+        public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+            resetCleanerState();
+            injectCleaner();
+            scheduleCleanerPoll(250);
+        }
+
+        @Override
+        public void onPageCommitVisible(WebView view, String url) {
+            injectCleaner();
+            checkCleanerReady();
         }
     }
 

@@ -23,6 +23,8 @@ internal static class Program
 internal sealed class CleanPlayerForm : Form
 {
     private const string SourcePageUrl = "https://cycling.today/";
+    private const string BuiltInFallbackPlayerUrl = "https://merithotdog.net/e/vggq46c2zw56n";
+    private const int FallbackDelayMilliseconds = 4500;
     private const uint MouseEventLeftDown = 0x0002;
     private const uint MouseEventLeftUp = 0x0004;
 
@@ -45,6 +47,10 @@ internal sealed class CleanPlayerForm : Form
     private FormWindowState previousWindowState;
     private bool fullScreen;
     private int blockedRequestCount;
+    private bool navigationStarted;
+    private bool navigationCompleted;
+    private bool fallbackLoaded;
+    private bool playerDetected;
     private bool autoClickScheduled;
 
     public CleanPlayerForm(string[] args)
@@ -99,7 +105,8 @@ internal sealed class CleanPlayerForm : Form
             await webView.EnsureCoreWebView2Async(environment);
             Log("WebView2 initialized");
             ConfigureWebView();
-            webView.Source = new Uri(SourcePageUrl);
+            NavigateToSourcePage();
+            StartFallbackWatchdogAsync();
         }
         catch (Exception ex)
         {
@@ -152,6 +159,122 @@ internal sealed class CleanPlayerForm : Form
         Log("Mode: cleaner=" + enableCleaner + " blocking=" + enableBlocking + " autoClick=" + enableAutoClick);
     }
 
+    private void NavigateToSourcePage()
+    {
+        navigationStarted = false;
+        navigationCompleted = false;
+        fallbackLoaded = false;
+        playerDetected = false;
+        autoClickScheduled = false;
+        blockedRequestCount = 0;
+        Log("Navigating source page: " + SourcePageUrl);
+        webView.CoreWebView2.Navigate(SourcePageUrl);
+    }
+
+    private async void StartFallbackWatchdogAsync()
+    {
+        await Task.Delay(FallbackDelayMilliseconds);
+        if (IsDisposed || webView == null || webView.CoreWebView2 == null || fallbackLoaded || playerDetected)
+        {
+            return;
+        }
+
+        if (!navigationCompleted)
+        {
+            LoadFallbackPlayer("source-timeout navigationStarted=" + navigationStarted + " navigationCompleted=" + navigationCompleted);
+            return;
+        }
+
+        bool found = await CheckPlayerAsync("fallback-watchdog");
+        if (!found && !fallbackLoaded)
+        {
+            LoadFallbackPlayer("player-not-detected navigationStarted=" + navigationStarted + " navigationCompleted=" + navigationCompleted);
+        }
+    }
+
+    private void LoadFallbackPlayer(string reason)
+    {
+        if (fallbackLoaded || webView == null || webView.CoreWebView2 == null)
+        {
+            return;
+        }
+
+        string playerUrl = GetFallbackPlayerUrl();
+        fallbackLoaded = true;
+        playerDetected = true;
+        autoClickScheduled = false;
+        Log("Loading fallback player. reason=" + reason + " src=" + playerUrl);
+        webView.CoreWebView2.NavigateToString(BuildFallbackHtml(playerUrl));
+        ScheduleAutoUnmuteClick();
+    }
+
+    private string GetFallbackPlayerUrl()
+    {
+        string[] candidates =
+        {
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "player-url.txt"),
+            Path.Combine(Application.StartupPath, "player-url.txt"),
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "windows", "player-url.txt")
+        };
+
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            string path = candidates[i];
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            foreach (string rawLine in File.ReadAllLines(path))
+            {
+                string line = rawLine.Trim();
+                if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                Uri uri;
+                if (Uri.TryCreate(line, UriKind.Absolute, out uri) &&
+                    (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+                {
+                    Log("Fallback player override loaded: " + path);
+                    return line;
+                }
+            }
+        }
+
+        return BuiltInFallbackPlayerUrl;
+    }
+
+    private static string BuildFallbackHtml(string playerUrl)
+    {
+        string htmlUrl = EncodeHtmlAttribute(playerUrl);
+        string jsUrl = EncodeJavaScriptString(playerUrl);
+        return "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+            "<style>html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:#000;}#player{position:fixed;inset:0;width:100%;height:100%;border:0;background:#000;}</style>" +
+            "</head><body><iframe id=\"player\" src=\"" + htmlUrl + "\" frameborder=\"0\" scrolling=\"no\" allow=\"autoplay; encrypted-media; fullscreen; picture-in-picture\" allowfullscreen></iframe>" +
+            "<script>(function(){var src='" + jsUrl + "';function frame(){return document.getElementById('player');}function rect(){var f=frame();if(!f){return{left:0,top:0,width:innerWidth,height:innerHeight};}var r=f.getBoundingClientRect();return{left:Math.max(0,r.left),top:Math.max(0,r.top),width:Math.max(1,r.width),height:Math.max(1,r.height)};}function clamp(v,min,max){return Math.max(min,Math.min(max,v));}function pointText(){var r=rect();var maxX=Math.max(10,innerWidth-10);var maxY=Math.max(10,innerHeight-10);var pts=[[r.left+r.width*.16,r.top+r.height*.12],[r.left+r.width*.08,r.top+r.height*.88],[r.left+r.width*.50,r.top+r.height*.92],[r.left+r.width*.50,r.top+r.height*.50]];var out=[];for(var i=0;i<pts.length;i++){var p=Math.round(clamp(pts[i][0],10,maxX))+','+Math.round(clamp(pts[i][1],10,maxY));if(out.indexOf(p)<0){out.push(p);}}return out.join('|');}window.__cyclingTodayCleanPlayer={version:100,apply:function(){return true;},getClickPointText:pointText,getStateText:function(){var r=rect();return 'playerFound=true candidates=1 reason=fallback rect='+Math.round(r.left)+','+Math.round(r.top)+','+Math.round(r.width)+'x'+Math.round(r.height)+' src='+src;}};})();</script>" +
+            "</body></html>";
+    }
+
+    private static string EncodeHtmlAttribute(string value)
+    {
+        return (value ?? "")
+            .Replace("&", "&amp;")
+            .Replace("\"", "&quot;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;");
+    }
+
+    private static string EncodeJavaScriptString(string value)
+    {
+        return (value ?? "")
+            .Replace("\\", "\\\\")
+            .Replace("'", "\\'")
+            .Replace("\r", "\\r")
+            .Replace("\n", "\\n")
+            .Replace("\t", "\\t");
+    }
     private System.Drawing.Icon LoadAppIcon()
     {
         string[] candidates =
@@ -254,6 +377,14 @@ internal sealed class CleanPlayerForm : Form
             return;
         }
 
+        navigationStarted = true;
+        Log("Top navigation starting: " + e.Uri);
+
+        if (uri.Scheme == "about" || uri.Scheme == "data")
+        {
+            return;
+        }
+
         if ((enableBlocking && ShouldBlock(e.Uri)) || !IsAllowedTopLevelHost(uri.Host))
         {
             e.Cancel = true;
@@ -300,6 +431,7 @@ internal sealed class CleanPlayerForm : Form
 
     private async void OnNavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
     {
+        navigationCompleted = true;
         Log("Navigation completed. success=" + e.IsSuccess + " blockedRequests=" + blockedRequestCount);
         await CheckPlayerAsync("navigation-completed");
         ScheduleAutoUnmuteClick();
@@ -310,19 +442,27 @@ internal sealed class CleanPlayerForm : Form
         await CheckPlayerAsync("dom-content-loaded");
     }
 
-    private async Task CheckPlayerAsync(string stage)
+    private async Task<bool> CheckPlayerAsync(string stage)
     {
         try
         {
             string script =
                 "(function(){var h=window.__cyclingTodayCleanPlayer;if(!h||!h.getStateText){return 'helper=missing';}return h.getStateText();})()";
             string result = await webView.ExecuteScriptAsync(script);
-            Log(stage + ": " + DecodeScriptString(result));
+            string decoded = DecodeScriptString(result);
+            Log(stage + ": " + decoded);
+            if (decoded.IndexOf("playerFound=true", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                playerDetected = true;
+                return true;
+            }
         }
         catch (Exception ex)
         {
             Log(stage + ": player check failed: " + ex.Message);
         }
+
+        return false;
     }
 
     private async void ScheduleAutoUnmuteClick()
@@ -488,7 +628,8 @@ internal sealed class CleanPlayerForm : Form
     {
         if (e.KeyCode == Keys.F5)
         {
-            webView.Reload();
+            NavigateToSourcePage();
+            StartFallbackWatchdogAsync();
             e.Handled = true;
             return;
         }
