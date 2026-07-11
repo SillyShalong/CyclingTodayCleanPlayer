@@ -11,6 +11,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -160,15 +161,19 @@ public class MainActivity extends Activity {
         webView.setWebViewClient(new CleanWebViewClient());
         webView.setWebChromeClient(new CleanChromeClient());
 
-        root.addView(webView, new FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams webViewParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
+                ViewGroup.LayoutParams.MATCH_PARENT);
+        webViewParams.bottomMargin = dp(58);
+        root.addView(webView, webViewParams);
 
         loadingCover = new View(this);
         loadingCover.setBackgroundColor(0xff000000);
-        root.addView(loadingCover, new FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams coverParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
+                ViewGroup.LayoutParams.MATCH_PARENT);
+        coverParams.bottomMargin = dp(58);
+        root.addView(loadingCover, coverParams);
 
         createControlBar();
     }
@@ -240,7 +245,7 @@ public class MainActivity extends Activity {
 
     private void manualUnmute() {
         autoTapAttempts = 0;
-        sendAutoUnmuteTap();
+        sendUnmuteTap(false);
     }
     private void enterImmersiveMode() {
         getWindow().getDecorView().setSystemUiVisibility(
@@ -280,7 +285,7 @@ public class MainActivity extends Activity {
     private final Runnable autoTapRunnable = new Runnable() {
         @Override
         public void run() {
-            sendAutoUnmuteTap();
+            sendUnmuteTap(true);
         }
     };
 
@@ -347,8 +352,7 @@ public class MainActivity extends Activity {
         autoTapAttempts = 0;
         handler.postDelayed(autoTapRunnable, 8000);
     }
-
-private void sendAutoUnmuteTap() {
+    private void sendUnmuteTap(final boolean automatic) {
         autoTapAttempts++;
         if (webView == null || webView.getWidth() <= 0 || webView.getHeight() <= 0) {
             return;
@@ -358,7 +362,7 @@ private void sendAutoUnmuteTap() {
         webView.evaluateJavascript(script, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String value) {
-                List<float[]> points = parseClickPoints(decodeScriptString(value));
+                final List<float[]> points = parseClickPoints(decodeScriptString(value));
                 if (points.isEmpty()) {
                     if (autoTapAttempts < 18) {
                         handler.postDelayed(autoTapRunnable, 1000);
@@ -366,30 +370,20 @@ private void sendAutoUnmuteTap() {
                     return;
                 }
 
-                final List<float[]> clickPoints = points;
                 status("Sending unmute/resume...");
-                setClickShield(false);
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
-                        int limit = Math.min(clickPoints.size(), 4);
-                        for (int i = 0; i < limit; i++) {
-                            float[] point = clickPoints.get(i);
-                            tapWebView(point[0], point[1]);
-                        }
-
-                        handler.postDelayed(new Runnable() {
-                            @Override
-                            public void run() {
-                                setClickShield(true);
-                                status("Player ready. Use Refresh if it freezes.");
-                            }
-                        }, 900);
+                        // Multiple taps can toggle mute/play back off. Keep the player touchable.
+                        float[] point = points.get(0);
+                        tapWebView(point[0], point[1]);
+                        status("Player ready. Tap the video if sound is still muted.");
                     }
                 }, 120);
             }
         });
     }
+
 
     private List<float[]> parseClickPoints(String text) {
         List<float[]> points = new ArrayList<>();
@@ -448,13 +442,27 @@ private void sendAutoUnmuteTap() {
     }
 
     private void tapWebView(float x, float y) {
-        long now = SystemClock.uptimeMillis();
-        MotionEvent down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0);
-        MotionEvent up = MotionEvent.obtain(now, now + 80, MotionEvent.ACTION_UP, x, y, 0);
+        final long downTime = SystemClock.uptimeMillis();
+        final float tapX = x;
+        final float tapY = y;
+        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, tapX, tapY, 0);
+        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         webView.dispatchTouchEvent(down);
-        webView.dispatchTouchEvent(up);
         down.recycle();
-        up.recycle();
+
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (webView == null) {
+                    return;
+                }
+                long upTime = SystemClock.uptimeMillis();
+                MotionEvent up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, tapX, tapY, 0);
+                up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                webView.dispatchTouchEvent(up);
+                up.recycle();
+            }
+        }, 80);
     }
     private boolean isAllowedTopLevel(Uri uri) {
         String host = uri.getHost();

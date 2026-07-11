@@ -754,17 +754,12 @@ internal sealed class CleanPlayerForm : Form
             SetForegroundWindow(Handle);
             webView.Focus();
 
-            int sent = 0;
-            for (int i = 0; i < points.Length && i < 4; i++)
-            {
-                Point screenPoint = webView.PointToScreen(points[i]);
-                SetCursorPos(screenPoint.X, screenPoint.Y);
-                mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
-                mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
-                sent++;
-            }
+            Point screenPoint = webView.PointToScreen(points[0]);
+            SetCursorPos(screenPoint.X, screenPoint.Y);
+            mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
+            mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
 
-            Log("Auto unmute/resume click sent from player rect. points=" + FormatPoints(points, sent));
+            Log("Unmute/resume click sent from player rect. point=" + FormatPoints(points, 1));
             AddVisibleStatus("Unmute/resume click sent.");
         }
         catch (Exception ex)
