@@ -1,5 +1,5 @@
 (function () {
-  var VERSION = 6;
+  var VERSION = 8;
   if (window.__cyclingTodayCleanPlayer && window.__cyclingTodayCleanPlayer.version === VERSION) {
     try { window.__cyclingTodayCleanPlayer.apply(); } catch (ignore) {}
     return;
@@ -14,8 +14,8 @@
   };
 
   var blockedHostPattern = /(2mdn|adform|adnxs|adskeeper|adsterra|advertising|amazon-adsystem|analytics\.google|casalemedia|contextweb|criteo|doubleclick|exoclick|googlesyndication|googletagmanager|googletagservices|google-analytics|googleadservices|imasdk|mgid|onclickads|openx|outbrain|popads|popcash|propellerads|pubmatic|quantserve|revcontent|rubiconproject|scorecardresearch|taboola|trafficjunky|yllix|adsrvr|adroll|adservice|adsafeprotected|bluekai|demdex|everesttech|indexww|lijit|media\.net|moatads|sharethrough|smartadserver|spotxchange|springserve|teads|themoneytizer|yieldmo|zedo|zeotap|onesignal|twitter|x\.com|facebook|instagram)/i;
-  var playerHintPattern = /(reformyoung|merithotdog|player|stream|embed|live|video|jwplayer|dailymotion|twitch|cloudfront|fastly|hls|dash|m3u8|\/e\/)/i;
-  var liveEmbedPattern = /(reformyoung|merithotdog|\/e\/[a-z0-9_-]+|embed\/[a-z0-9_-]+|player|stream|live|m3u8|hls)/i;
+  var playerHintPattern = /(ok\.ru|videoembed|player|stream|embed|live|video|jwplayer|dailymotion|twitch|cloudfront|fastly|hls|dash|m3u8|\/e\/)/i;
+  var liveEmbedPattern = /(ok\.ru|videoembed|\/e\/[a-z0-9_-]+|embed\/[a-z0-9_-]+|player|stream|live|m3u8|hls)/i;
   var nonLiveVideoHostPattern = /(^|\.)((youtube(-nocookie)?\.com)|(youtu\.be)|(vimeo\.com))$/i;
   var negativeFramePattern = /(chat|comment|poll|prediction|twitter|x\.com|facebook|instagram|telegram|discord|disqus|newsletter|googlesyndication|doubleclick|googleads|aswift)/i;
   var adLabelPattern = /(^|[\s_-])(ad|ads|advert|advertisement|sponsor|sponsored|banner|popup|popunder|overlay|sticky|outbrain|taboola|mgid|revcontent|adunit|ad-slot|native-ad)([\s_-]|$)/i;
@@ -108,7 +108,7 @@ function hostOf(url) {
     if (/autoplay|fullscreen|encrypted-media|picture-in-picture/i.test(allow)) { score += area * 1.5; }
     if (frame.hasAttribute('allowfullscreen')) { score += area; }
     if (width >= 300 && height >= 160 && width / Math.max(height, 1) >= 1.2) { score += area; }
-    if (/reformyoung|merithotdog/i.test(label)) { score += area * 6; }
+    if (/ok\.ru|videoembed/i.test(label)) { score += area * 8; }
     if (/ad|ads|banner|sponsor|popup|tracking/i.test(label)) { score -= area * 2; }
 
     return score;
@@ -322,6 +322,25 @@ function hostOf(url) {
     return text.join('|');
   }
 
+  function getFullScreenPointText() {
+    applyCleanLayout();
+    if (!state.found || !state.rect || state.rect.width <= 1 || state.rect.height <= 1) {
+      return '';
+    }
+
+    var r = state.rect;
+    var maxX = Math.max(10, window.innerWidth - 10);
+    var maxY = Math.max(10, window.innerHeight - 10);
+    var points = [
+      [r.left + r.width - 24, r.top + r.height - 22],
+      [r.left + r.width - 48, r.top + r.height - 22],
+      [r.left + r.width - 24, r.top + r.height - 46]
+    ];
+
+    return points.map(function (point) {
+      return Math.round(clamp(point[0], 10, maxX)) + ',' + Math.round(clamp(point[1], 10, maxY));
+    }).join('|');
+  }
   function getStateText() {
     applyCleanLayout();
     var rect = state.rect || { left: 0, top: 0, width: 0, height: 0 };
@@ -336,6 +355,7 @@ function hostOf(url) {
     version: VERSION,
     apply: applyCleanLayout,
     getClickPointText: getClickPointText,
+    getFullScreenPointText: getFullScreenPointText,
     getStateText: getStateText
   };
 

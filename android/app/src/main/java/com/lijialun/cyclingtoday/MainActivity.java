@@ -1,62 +1,98 @@
 package com.lijialun.cyclingtoday;
 
-import android.Manifest;
 import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.graphics.Bitmap;
+import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.view.MotionEvent;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.InputDevice;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.FrameLayout;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class MainActivity extends Activity {
     private static final String SOURCE_URL = "https://cycling.today/";
 
+    private static final int CONTROL_BAR_HEIGHT_DP = 68;
+    private static final int MAX_VISIBLE_LOG_LINES = 3;
+    private static final long PLAYER_FIRST_CHECK_DELAY_MILLIS = 8000L;
+    private static final long PLAYER_SECOND_CHECK_DELAY_MILLIS = 12000L;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final List<String> visibleLogLines = new ArrayList<>();
+    private final AtomicInteger blockedRequestCount = new AtomicInteger();
+
     private WebView webView;
     private FrameLayout root;
-    private View loadingCover;
+    private FrameLayout loadingCover;
     private LinearLayout controlBar;
+    private TextView loadingText;
     private TextView statusText;
+    private Button fullscreenButton;
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private String cleanerScript;
+    private File logFile;
+
     private boolean cleanerReady;
     private boolean cleanerPollScheduled;
     private boolean autoTapScheduled;
+    private boolean autoFullScreenScheduled;
+
+    private boolean controlsHidden;
+    private boolean controlsHiddenBeforeCustomView;
+    private boolean destroyed;
     private int autoTapAttempts;
+    private int manualTapIndex;
+    private int cleanerPollAttempts;
+    private int loadGeneration;
 
     private static final Set<String> BLOCKED_HOSTS = new HashSet<>(Arrays.asList(
             "2mdn.net",
@@ -70,46 +106,35 @@ public class MainActivity extends Activity {
             "adsafeprotected.com",
             "adsrvr.org",
             "adtrafficquality.google",
-            "bluekai.com",
-            "demdex.net",
-            "everesttech.net",
-            "indexww.com",
-            "lijit.com",
-            "media.net",
-            "moatads.com",
-            "sharethrough.com",
-            "smartadserver.com",
-            "spotxchange.com",
-            "springserve.com",
-            "teads.tv",
-            "themoneytizer.com",
-            "yieldmo.com",
-            "zedo.com",
-            "zeotap.com",
-            "onesignal.com",
-            "platform.twitter.com",
-            "syndication.twitter.com",
-            "twitter.com",
-            "x.com",
-            "facebook.com",
-            "instagram.com",            "amazon-adsystem.com",
+            "amazon-adsystem.com",
             "analytics.google.com",
+            "bluekai.com",
             "casalemedia.com",
             "contextweb.com",
             "criteo.com",
             "criteo.net",
+            "demdex.net",
             "doubleclick.net",
+            "everesttech.net",
             "exoclick.com",
+            "facebook.com",
+            "google-analytics.com",
+            "googleadservices.com",
             "googlesyndication.com",
             "googletagmanager.com",
             "googletagservices.com",
-            "google-analytics.com",
-            "googleadservices.com",
             "imasdk.googleapis.com",
+            "indexww.com",
+            "instagram.com",
+            "lijit.com",
+            "media.net",
             "mgid.com",
+            "moatads.com",
             "onclickads.net",
+            "onesignal.com",
             "openx.net",
             "outbrain.com",
+            "platform.twitter.com",
             "popads.net",
             "popcash.net",
             "propellerads.com",
@@ -118,9 +143,21 @@ public class MainActivity extends Activity {
             "revcontent.com",
             "rubiconproject.com",
             "scorecardresearch.com",
+            "sharethrough.com",
+            "smartadserver.com",
+            "spotxchange.com",
+            "springserve.com",
+            "syndication.twitter.com",
             "taboola.com",
+            "teads.tv",
+            "themoneytizer.com",
             "trafficjunky.net",
-            "yllix.com"
+            "twitter.com",
+            "x.com",
+            "yieldmo.com",
+            "yllix.com",
+            "zedo.com",
+            "zeotap.com"
     ));
 
     @Override
@@ -131,13 +168,20 @@ public class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
 
+        logFile = new File(getFilesDir(), "last-run.log");
+        resetLog();
+
         root = new FrameLayout(this);
         root.setBackgroundColor(0xff000000);
         setContentView(root);
         enterImmersiveMode();
         createWebView();
-        status("Loading player...");
-        webView.loadUrl(SOURCE_URL);
+        createLoadingCover();
+        createControlBar();
+        applyContentInsets();
+
+        status("Starting Android player...");
+        loadSource("startup");
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -146,6 +190,8 @@ public class MainActivity extends Activity {
         webView.setBackgroundColor(0xff000000);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
+        webView.setFocusable(true);
+        webView.setFocusableInTouchMode(true);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -157,96 +203,173 @@ public class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setUserAgentString(settings.getUserAgentString() + " CyclingTodayAndroidPlayer/2.0");
 
-        webView.setWebViewClient(new CleanWebViewClient());
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+        webView.setWebViewClient(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new OreoCleanWebViewClient()
+                : new CleanWebViewClient());
         webView.setWebChromeClient(new CleanChromeClient());
 
-        FrameLayout.LayoutParams webViewParams = new FrameLayout.LayoutParams(
+        root.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT);
-        webViewParams.bottomMargin = dp(58);
-        root.addView(webView, webViewParams);
+                ViewGroup.LayoutParams.MATCH_PARENT));
+    }
 
-        loadingCover = new View(this);
-        loadingCover.setBackgroundColor(0xff000000);
-        FrameLayout.LayoutParams coverParams = new FrameLayout.LayoutParams(
+    private void createLoadingCover() {
+        loadingCover = new FrameLayout(this);
+        loadingCover.setBackgroundColor(0xff050706);
+        loadingCover.setClickable(true);
+
+        LinearLayout center = new LinearLayout(this);
+        center.setOrientation(LinearLayout.VERTICAL);
+        center.setGravity(Gravity.CENTER);
+        center.setPadding(dp(28), dp(20), dp(28), dp(20));
+
+        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleLarge);
+        center.addView(progress, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+        TextView heading = new TextView(this);
+        heading.setText("Preparing live player");
+        heading.setTextColor(0xfff0eee5);
+        heading.setTextSize(20f);
+        heading.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams headingParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        headingParams.topMargin = dp(14);
+        center.addView(heading, headingParams);
+
+        loadingText = new TextView(this);
+        loadingText.setText("Loading Cycling Today...");
+        loadingText.setTextColor(0xffaebdb6);
+        loadingText.setTextSize(12f);
+        loadingText.setGravity(Gravity.CENTER);
+        loadingText.setMaxLines(3);
+        LinearLayout.LayoutParams loadingTextParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        loadingTextParams.topMargin = dp(8);
+        center.addView(loadingText, loadingTextParams);
+
+        FrameLayout.LayoutParams centerParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER);
+        loadingCover.addView(center, centerParams);
+        root.addView(loadingCover, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT);
-        coverParams.bottomMargin = dp(58);
-        root.addView(loadingCover, coverParams);
-
-        createControlBar();
+                ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
     private void createControlBar() {
         controlBar = new LinearLayout(this);
         controlBar.setOrientation(LinearLayout.HORIZONTAL);
         controlBar.setGravity(Gravity.CENTER_VERTICAL);
-        controlBar.setPadding(dp(10), dp(6), dp(10), dp(6));
-        controlBar.setBackgroundColor(0xcc161616);
+        controlBar.setPadding(dp(10), dp(7), dp(10), dp(7));
+        controlBar.setBackgroundColor(0xee131716);
 
         statusText = new TextView(this);
-        statusText.setText("Loading player...");
-        statusText.setTextColor(0xffeeeeee);
-        statusText.setTextSize(12f);
-        statusText.setSingleLine(true);
-        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        statusText.setTextColor(0xffe9eee9);
+        statusText.setTextSize(10f);
+        statusText.setTypeface(Typeface.MONOSPACE);
+        statusText.setMaxLines(MAX_VISIBLE_LOG_LINES);
+        statusText.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                1f);
         controlBar.addView(statusText, statusParams);
 
-        Button unmuteButton = new Button(this);
-        unmuteButton.setText("Unmute");
-        unmuteButton.setOnClickListener(new View.OnClickListener() {
+        addControlButton("Unmute / Resume", 132, new View.OnClickListener() {
             @Override
-            public void onClick(View v) {
-                status("Sending unmute/resume...");
-                manualUnmute();
+            public void onClick(View view) {
+                sendUnmuteTap(false);
             }
         });
-        controlBar.addView(unmuteButton, new LinearLayout.LayoutParams(dp(112), dp(42)));
-
-        Button refreshButton = new Button(this);
-        refreshButton.setText("Refresh");
-        refreshButton.setOnClickListener(new View.OnClickListener() {
+        addControlButton("Cast Screen", 108, new View.OnClickListener() {
             @Override
-            public void onClick(View v) {
-                refreshPlayer();
+            public void onClick(View view) {
+                openCastSettings();
             }
         });
-        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(112), dp(42));
-        refreshParams.leftMargin = dp(8);
-        controlBar.addView(refreshButton, refreshParams);
+        fullscreenButton = addControlButton("Full Screen", 104, new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                sendPlayerFullScreenTap(false);
+            }
+        });
+        addControlButton("Refresh", 92, new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                loadSource("manual refresh");
+            }
+        });
 
         FrameLayout.LayoutParams barParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(58),
+                dp(CONTROL_BAR_HEIGHT_DP),
                 Gravity.BOTTOM);
         root.addView(controlBar, barParams);
         controlBar.bringToFront();
     }
 
+    private Button addControlButton(String text, int widthDp, View.OnClickListener listener) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setTextSize(11f);
+        button.setAllCaps(false);
+        button.setSingleLine(true);
+        button.setOnClickListener(listener);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(widthDp), dp(46));
+        params.leftMargin = dp(7);
+        controlBar.addView(button, params);
+        return button;
+    }
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
-    private void status(String text) {
-        if (statusText != null) {
-            statusText.setText(text);
+    private void applyContentInsets() {
+        int bottomMargin = controlsHidden ? 0 : dp(CONTROL_BAR_HEIGHT_DP);
+        if (webView != null) {
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) webView.getLayoutParams();
+            params.bottomMargin = bottomMargin;
+            webView.setLayoutParams(params);
+        }
+        if (loadingCover != null) {
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) loadingCover.getLayoutParams();
+            params.bottomMargin = bottomMargin;
+            loadingCover.setLayoutParams(params);
         }
     }
 
-    private void refreshPlayer() {
-        if (webView == null) {
-            return;
+    private void setControlsHidden(boolean hidden) {
+        controlsHidden = hidden;
+        if (controlBar != null) {
+            controlBar.setVisibility(hidden ? View.GONE : View.VISIBLE);
         }
-        status("Refreshing player...");
-        resetCleanerState();
-        webView.loadUrl(SOURCE_URL);
+        applyContentInsets();
+        enterImmersiveMode();
+        if (hidden) {
+            logOnly("App full screen enabled. Press Back to restore controls.");
+        } else {
+            status("Controls restored.");
+        }
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                injectCleaner();
+            }
+        }, 180L);
     }
 
-    private void manualUnmute() {
-        autoTapAttempts = 0;
-        sendUnmuteTap(false);
-    }
     private void enterImmersiveMode() {
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -257,62 +380,182 @@ public class MainActivity extends Activity {
                         | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
     }
 
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            enterImmersiveMode();
+        }
+    }
+
+    private void resetLog() {
+        try (FileOutputStream output = new FileOutputStream(logFile, false)) {
+            String line = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(new Date())
+                    + " Starting Android player\n";
+            output.write(line.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) {
+        }
+    }
+
+    private void status(String message) {
+        if (message == null || message.trim().length() == 0) {
+            return;
+        }
+        logOnly(message);
+        String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + message;
+        visibleLogLines.add(line);
+        while (visibleLogLines.size() > MAX_VISIBLE_LOG_LINES) {
+            visibleLogLines.remove(0);
+        }
+        if (statusText != null) {
+            statusText.setText(joinLines(visibleLogLines));
+        }
+        if (loadingText != null && loadingCover != null && loadingCover.getVisibility() == View.VISIBLE) {
+            loadingText.setText(message);
+        }
+    }
+
+    private void logOnly(String message) {
+        if (logFile == null || message == null) {
+            return;
+        }
+        try (FileOutputStream output = new FileOutputStream(logFile, true)) {
+            String line = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(new Date())
+                    + " " + message + "\n";
+            output.write(line.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) {
+        }
+    }
+
+    private String joinLines(List<String> lines) {
+        StringBuilder result = new StringBuilder();
+        for (String line : lines) {
+            if (result.length() > 0) {
+                result.append('\n');
+            }
+            result.append(line);
+        }
+        return result.toString();
+    }
+
+    private void loadSource(String reason) {
+        if (webView == null) {
+            return;
+        }
+        loadGeneration++;
+        final int generation = loadGeneration;
+
+        blockedRequestCount.set(0);
+        resetCleanerState();
+        showLoadingCover("Loading Cycling Today source...");
+        status("Loading source page. reason=" + reason);
+        webView.stopLoading();
+        webView.loadUrl(SOURCE_URL);
+        scheduleCleanerPoll(200L);
+        schedulePlayerWatchdog(generation);
+    }
+
+    private void resetCleanerState() {
+        cleanerReady = false;
+        cleanerPollScheduled = false;
+        autoTapScheduled = false;
+        autoFullScreenScheduled = false;
+        autoTapAttempts = 0;
+        manualTapIndex = 0;
+        cleanerPollAttempts = 0;
+        handler.removeCallbacks(cleanerPollRunnable);
+        handler.removeCallbacks(autoTapRunnable);
+        handler.removeCallbacks(autoFullScreenRunnable);
+    }
+
+    private void showLoadingCover(String message) {
+        if (loadingCover != null) {
+            loadingCover.setVisibility(View.VISIBLE);
+            loadingCover.bringToFront();
+            if (controlBar != null && !controlsHidden) {
+                controlBar.bringToFront();
+            }
+        }
+        if (loadingText != null) {
+            loadingText.setText(message);
+        }
+    }
+
+    private void hideLoadingCover() {
+        if (loadingCover != null) {
+            loadingCover.setVisibility(View.GONE);
+        }
+    }
+
+    private void schedulePlayerWatchdog(final int generation) {
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (destroyed || generation != loadGeneration || cleanerReady) {
+                    return;
+                }
+                status("Current Cycling Today player is still loading; waiting for the source page...");
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (destroyed || generation != loadGeneration || cleanerReady) {
+                            return;
+                        }
+                        hideLoadingCover();
+                        status("Current live player was not detected. No obsolete fallback was loaded; use Refresh to retry.");
+                    }
+                }, PLAYER_SECOND_CHECK_DELAY_MILLIS);
+            }
+        }, PLAYER_FIRST_CHECK_DELAY_MILLIS);
+    }
     private void injectCleaner() {
+        if (webView == null) {
+            return;
+        }
         try {
             webView.evaluateJavascript(getCleanerScript(), null);
-        } catch (IOException ignored) {
+        } catch (IOException exception) {
+            logOnly("Cleaner asset could not be read: " + exception.getMessage());
+        } catch (RuntimeException exception) {
+            logOnly("Cleaner injection failed: " + exception.getMessage());
         }
     }
 
     private String getCleanerScript() throws IOException {
         if (cleanerScript == null) {
             cleanerScript = readAsset("cleaner.js");
+            logOnly("Cleaner script loaded. bytes=" + cleanerScript.length());
         }
         return cleanerScript;
     }
 
     private String readAsset(String name) throws IOException {
-        InputStream input = getAssets().open(name);
-        byte[] buffer = new byte[input.available()];
-        int read = input.read(buffer);
-        input.close();
-        if (read <= 0) {
-            return "";
+        try (InputStream input = getAssets().open(name);
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                output.write(buffer, 0, read);
+            }
+            return new String(output.toByteArray(), StandardCharsets.UTF_8);
         }
-        return new String(buffer, 0, read, StandardCharsets.UTF_8);
     }
-
-    private final Runnable autoTapRunnable = new Runnable() {
-        @Override
-        public void run() {
-            sendUnmuteTap(true);
-        }
-    };
 
     private final Runnable cleanerPollRunnable = new Runnable() {
         @Override
         public void run() {
             cleanerPollScheduled = false;
+            if (destroyed || cleanerReady || webView == null) {
+                return;
+            }
+            cleanerPollAttempts++;
             injectCleaner();
             checkCleanerReady();
         }
     };
 
-    private void resetCleanerState() {
-        cleanerReady = false;
-        cleanerPollScheduled = false;
-        autoTapScheduled = false;
-        autoTapAttempts = 0;
-        handler.removeCallbacks(cleanerPollRunnable);
-        handler.removeCallbacks(autoTapRunnable);
-        if (loadingCover != null) {
-            loadingCover.setVisibility(View.VISIBLE);
-            status("Loading page...");
-        }
-    }
-
     private void scheduleCleanerPoll(long delayMillis) {
-        if (cleanerReady || cleanerPollScheduled) {
+        if (destroyed || cleanerReady || cleanerPollScheduled) {
             return;
         }
         cleanerPollScheduled = true;
@@ -323,89 +566,213 @@ public class MainActivity extends Activity {
         if (webView == null || cleanerReady) {
             return;
         }
-
-        String script = "(function(){var h=window.__cyclingTodayCleanPlayer;if(!h||!h.getStateText){return '';};h.apply&&h.apply();return h.getStateText();})()";
+        final int generation = loadGeneration;
+        String script = "(function(){var h=window.__cyclingTodayCleanPlayer;"
+                + "if(!h||!h.getStateText){return 'helper=missing';}"
+                + "h.apply&&h.apply();return h.getStateText();})()";
         webView.evaluateJavascript(script, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String value) {
+                if (destroyed || generation != loadGeneration || cleanerReady) {
+                    return;
+                }
                 String state = decodeScriptString(value);
                 if (state.contains("playerFound=true")) {
                     cleanerReady = true;
-                    if (loadingCover != null) {
-                        loadingCover.setVisibility(View.GONE);
-                        status("Player ready. Use Refresh if it freezes.");
-                    }
+                    handler.removeCallbacks(cleanerPollRunnable);
+                    hideLoadingCover();
+                    logOnly("Player detected: " + state);
+                    status("Player ready. Blocked " + blockedRequestCount.get() + " ad/tracking requests. Auto unmute is starting.");
                     scheduleAutoUnmuteTap();
+                    scheduleAutoPlayerFullScreen();
                     return;
                 }
 
-                scheduleCleanerPoll(250);
+                if (cleanerPollAttempts == 1 || cleanerPollAttempts == 8 || cleanerPollAttempts == 20) {
+                    logOnly("Player scan: " + state);
+                }
+                if (loadingText != null && loadingCover != null && loadingCover.getVisibility() == View.VISIBLE) {
+                    loadingText.setText("Scanning for live player...\n" + shortenState(state));
+                }
+                scheduleCleanerPoll(cleanerPollAttempts < 24 ? 300L : 1200L);
             }
         });
     }
 
+    private String shortenState(String state) {
+        if (state == null || state.length() == 0) {
+            return "Waiting for page scripts";
+        }
+        int sourceIndex = state.indexOf(" src=");
+        String result = sourceIndex >= 0 ? state.substring(0, sourceIndex) : state;
+        return result.length() > 140 ? result.substring(0, 140) : result;
+    }
+    private final Runnable autoTapRunnable = new Runnable() {
+        @Override
+        public void run() {
+            sendUnmuteTap(true);
+        }
+    };
+
     private void scheduleAutoUnmuteTap() {
-        if (autoTapScheduled) {
+        if (autoTapScheduled || webView == null) {
             return;
         }
         autoTapScheduled = true;
         autoTapAttempts = 0;
-        handler.postDelayed(autoTapRunnable, 8000);
+        handler.postDelayed(autoTapRunnable, 3500L);
     }
-    private void sendUnmuteTap(final boolean automatic) {
-        autoTapAttempts++;
-        if (webView == null || webView.getWidth() <= 0 || webView.getHeight() <= 0) {
+
+    private final Runnable autoFullScreenRunnable = new Runnable() {
+        @Override
+        public void run() {
+            sendPlayerFullScreenTap(true);
+        }
+    };
+
+    private void scheduleAutoPlayerFullScreen() {
+        if (autoFullScreenScheduled || webView == null) {
             return;
         }
+        autoFullScreenScheduled = true;
+        handler.postDelayed(autoFullScreenRunnable, 5000L);
+    }
 
-        String script = "(function(){var h=window.__cyclingTodayCleanPlayer;if(!h||!h.getClickPointText){return '';}return h.getClickPointText();})()";
+    private void sendPlayerFullScreenTap(final boolean automatic) {
+        if (webView == null || customView != null) {
+            return;
+        }
+        String script = "(function(){var h=window.__cyclingTodayCleanPlayer;"
+                + "if(!h||!h.getNormalizedFullScreenPointText){return '';}"
+                + "h.apply&&h.apply();return h.getNormalizedFullScreenPointText();})()";
         webView.evaluateJavascript(script, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String value) {
-                final List<float[]> points = parseClickPoints(decodeScriptString(value));
+                final List<float[]> points = parseNormalizedClickPoints(decodeScriptString(value));
                 if (points.isEmpty()) {
-                    if (autoTapAttempts < 18) {
-                        handler.postDelayed(autoTapRunnable, 1000);
+                    logOnly("Player full-screen controls are not ready.");
+                    if (!automatic) {
+                        status("Player full-screen control is not ready yet.");
                     }
                     return;
                 }
-
-                status("Sending unmute/resume...");
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        // Multiple taps can toggle mute/play back off. Keep the player touchable.
-                        float[] point = points.get(0);
-                        tapWebView(point[0], point[1]);
-                        status("Player ready. Tap the video if sound is still muted.");
-                    }
-                }, 120);
+                tryPlayerFullScreenPoint(points, 0);
             }
         });
     }
 
+    private void tryPlayerFullScreenPoint(final List<float[]> points, final int index) {
+        if (webView == null || destroyed || customView != null || index >= points.size()) {
+            if (customView == null && index >= points.size()) {
+                status("Player full screen was not confirmed. Tap Full Screen to retry.");
+            }
+            return;
+        }
+        final float[] point = points.get(index);
+        tapWebView(point[0], point[1]);
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (destroyed || customView != null || webView == null) {
+                    return;
+                }
+                tapWebView(point[0], point[1]);
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (destroyed || customView != null) {
+                            return;
+                        }
+                        logOnly("Player full-screen touch not confirmed. point="
+                                + Math.round(point[0]) + "," + Math.round(point[1])
+                                + " attempt=" + (index + 1));
+                        tryPlayerFullScreenPoint(points, index + 1);
+                    }
+                }, 900L);
+            }
+        }, 450L);
+    }
+    private void sendUnmuteTap(final boolean automatic) {
+        if (webView == null) {
+            return;
+        }
+        if (automatic) {
+            autoTapAttempts++;
+        }
+        if (webView.getWidth() <= 0 || webView.getHeight() <= 0) {
+            retryAutomaticTapIfNeeded(automatic, "WebView has no size yet");
+            return;
+        }
 
-    private List<float[]> parseClickPoints(String text) {
+        String script = "(function(){var h=window.__cyclingTodayCleanPlayer;"
+                + "if(!h||!h.getNormalizedClickPointText){return '';}"
+                + "h.apply&&h.apply();return h.getNormalizedClickPointText();})()";
+        webView.evaluateJavascript(script, new ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String value) {
+                final List<float[]> points = parseNormalizedClickPoints(decodeScriptString(value));
+                if (points.isEmpty()) {
+                    retryAutomaticTapIfNeeded(automatic, "player click points unavailable");
+                    if (!automatic) {
+                        status("Unmute/resume is waiting for the player. Try again or press Refresh.");
+                    }
+                    return;
+                }
+
+                final int index;
+                if (automatic) {
+                    index = 0;
+                } else {
+                    index = manualTapIndex % points.size();
+                    manualTapIndex++;
+                }
+                final float[] point = points.get(index);
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (webView == null || destroyed) {
+                            return;
+                        }
+                        tapWebView(point[0], point[1]);
+                        String source = automatic ? "Auto unmute" : "Manual unmute/resume "
+                                + (index + 1) + "/" + points.size();
+                        status(source + " touch sent at " + Math.round(point[0]) + "," + Math.round(point[1]) + ".");
+                    }
+                }, 120L);
+            }
+        });
+    }
+
+    private void retryAutomaticTapIfNeeded(boolean automatic, String reason) {
+        if (!automatic) {
+            return;
+        }
+        if (autoTapAttempts < 12) {
+            if (autoTapAttempts == 1 || autoTapAttempts == 6) {
+                logOnly("Auto unmute waiting: " + reason + ". attempt=" + autoTapAttempts);
+            }
+            handler.postDelayed(autoTapRunnable, 750L);
+        } else {
+            status("Auto unmute could not find controls. Use Unmute / Resume after video appears.");
+        }
+    }
+
+    private List<float[]> parseNormalizedClickPoints(String text) {
         List<float[]> points = new ArrayList<>();
         if (text == null || text.trim().length() == 0 || webView == null) {
             return points;
         }
-
         String[] pairs = text.split("\\|");
         for (String pair : pairs) {
             String[] parts = pair.split(",");
             if (parts.length != 2) {
                 continue;
             }
-
             try {
-                float rawX = Float.parseFloat(parts[0]);
-                float rawY = Float.parseFloat(parts[1]);
-                float maxX = Math.max(10f, webView.getWidth() - 10f);
-                float maxY = Math.max(10f, webView.getHeight() - 10f);
-                float x = Math.max(10f, Math.min(maxX, rawX));
-                float y = Math.max(10f, Math.min(maxY, rawY));
-
+                float ratioX = Math.max(0.01f, Math.min(0.99f, Float.parseFloat(parts[0])));
+                float ratioY = Math.max(0.01f, Math.min(0.99f, Float.parseFloat(parts[1])));
+                float x = Math.max(8f, Math.min(webView.getWidth() - 8f, ratioX * webView.getWidth()));
+                float y = Math.max(8f, Math.min(webView.getHeight() - 8f, ratioY * webView.getHeight()));
                 boolean duplicate = false;
                 for (float[] existing : points) {
                     if (Math.abs(existing[0] - x) < 4f && Math.abs(existing[1] - y) < 4f) {
@@ -419,7 +786,6 @@ public class MainActivity extends Activity {
             } catch (NumberFormatException ignored) {
             }
         }
-
         return points;
     }
 
@@ -427,21 +793,23 @@ public class MainActivity extends Activity {
         if (value == null || value.equals("null")) {
             return "";
         }
-
         String decoded = value;
-        if (decoded.length() >= 2 && decoded.charAt(0) == '"' && decoded.charAt(decoded.length() - 1) == '"') {
+        if (decoded.length() >= 2 && decoded.charAt(0) == '"'
+                && decoded.charAt(decoded.length() - 1) == '"') {
             decoded = decoded.substring(1, decoded.length() - 1);
         }
-
-        decoded = decoded.replace("\\\"", "\"");
-        decoded = decoded.replace("\\\\", "\\");
-        decoded = decoded.replace("\\n", "\n");
-        decoded = decoded.replace("\\r", "\r");
-        decoded = decoded.replace("\\t", "\t");
-        return decoded;
+        return decoded.replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+                .replace("\\n", "\n")
+                .replace("\\r", "\r")
+                .replace("\\t", "\t");
     }
 
     private void tapWebView(float x, float y) {
+        if (webView == null) {
+            return;
+        }
+        webView.requestFocus();
         final long downTime = SystemClock.uptimeMillis();
         final float tapX = x;
         final float tapY = y;
@@ -453,7 +821,7 @@ public class MainActivity extends Activity {
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (webView == null) {
+                if (webView == null || destroyed) {
                     return;
                 }
                 long upTime = SystemClock.uptimeMillis();
@@ -462,9 +830,25 @@ public class MainActivity extends Activity {
                 webView.dispatchTouchEvent(up);
                 up.recycle();
             }
-        }, 80);
+        }, 75L);
     }
+
+    private void openCastSettings() {
+        status("Opening Android wireless display scan. Select the TV, then return to the player.");
+        Intent castIntent = new Intent(Settings.ACTION_CAST_SETTINGS);
+        try {
+            startActivity(castIntent);
+        } catch (ActivityNotFoundException firstError) {
+            try {
+                startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS));
+            } catch (ActivityNotFoundException secondError) {
+                status("This device does not expose Android wireless display settings.");
+            }
+        }
+    }
+
     private boolean isAllowedTopLevel(Uri uri) {
+
         String host = uri.getHost();
         if (host == null) {
             return false;
@@ -478,7 +862,6 @@ public class MainActivity extends Activity {
         if (host == null) {
             return false;
         }
-
         host = host.toLowerCase(Locale.US);
         for (String blocked : BLOCKED_HOSTS) {
             if (host.equals(blocked) || host.endsWith("." + blocked)) {
@@ -501,12 +884,27 @@ public class MainActivity extends Activity {
                 new ByteArrayInputStream(new byte[0]));
     }
 
+    private String safeUrlForLog(String value) {
+        if (value == null) {
+            return "";
+        }
+        try {
+            Uri uri = Uri.parse(value);
+            String host = uri.getHost();
+            String path = uri.getPath();
+            return (host == null ? "" : host) + (path == null ? "" : path);
+        } catch (RuntimeException ignored) {
+            return value.length() > 160 ? value.substring(0, 160) : value;
+        }
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
         enterImmersiveMode();
         if (webView != null) {
             webView.onResume();
+            webView.resumeTimers();
         }
     }
 
@@ -520,15 +918,59 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
         handler.removeCallbacksAndMessages(null);
+        if (customView != null && root != null) {
+            root.removeView(customView);
+            customView = null;
+        }
         if (webView != null) {
-            root.removeView(webView);
+            if (root != null) {
+                root.removeView(webView);
+            }
+            webView.stopLoading();
+            webView.setWebChromeClient(null);
+            webView.setWebViewClient(null);
             webView.destroy();
+            webView = null;
         }
         super.onDestroy();
     }
 
-    private final class CleanWebViewClient extends WebViewClient {
+    @Override
+    public void onBackPressed() {
+        if (customView != null) {
+            hideCustomView();
+            return;
+        }
+        if (controlsHidden) {
+            setControlsHidden(false);
+            return;
+        }
+        super.onBackPressed();
+    }
+    private void hideCustomView() {
+        if (customView == null) {
+            return;
+        }
+        root.removeView(customView);
+        customView = null;
+        if (customViewCallback != null) {
+            customViewCallback.onCustomViewHidden();
+            customViewCallback = null;
+        }
+        if (webView != null) {
+            webView.setVisibility(View.VISIBLE);
+        }
+        controlsHidden = controlsHiddenBeforeCustomView;
+        if (controlBar != null) {
+            controlBar.setVisibility(controlsHidden ? View.GONE : View.VISIBLE);
+        }
+        applyContentInsets();
+        enterImmersiveMode();
+    }
+
+    private class CleanWebViewClient extends WebViewClient {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             Uri uri = request.getUrl();
@@ -536,49 +978,126 @@ public class MainActivity extends Activity {
                 return true;
             }
             if (request.isForMainFrame()) {
-                return !isAllowedTopLevel(uri);
+                boolean blocked = !isAllowedTopLevel(uri);
+                if (blocked) {
+                    status("Blocked top-level navigation to " + safeUrlForLog(uri.toString()));
+                }
+                return blocked;
             }
-            return isBlocked(uri);
+            if (isBlocked(uri)) {
+                blockedRequestCount.incrementAndGet();
+                return true;
+            }
+            return false;
         }
 
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
             Uri uri = request.getUrl();
             if (uri != null && isBlocked(uri)) {
+                blockedRequestCount.incrementAndGet();
                 return emptyResponse();
             }
             return super.shouldInterceptRequest(view, request);
         }
 
         @Override
-        public void onPageFinished(WebView view, String url) {
+        public void onPageStarted(WebView view, String url, Bitmap favicon) {
+            logOnly("Navigation started: " + safeUrlForLog(url));
+            showLoadingCover("Loading Cycling Today source...");
             injectCleaner();
-            checkCleanerReady();
-        }
-
-        @Override
-        public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
-            resetCleanerState();
-            injectCleaner();
-            scheduleCleanerPoll(250);
+            scheduleCleanerPoll(200L);
         }
 
         @Override
         public void onPageCommitVisible(WebView view, String url) {
+            logOnly("Navigation content visible: " + safeUrlForLog(url));
             injectCleaner();
             checkCleanerReady();
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            logOnly("Navigation finished: " + safeUrlForLog(url)
+                    + " blockedRequests=" + blockedRequestCount.get());
+            injectCleaner();
+            checkCleanerReady();
+        }
+
+        @Override
+        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+            if (!request.isForMainFrame()) {
+                return;
+            }
+            String description = error == null ? "unknown" : String.valueOf(error.getDescription());
+            logOnly("Main navigation error: " + description);
+            hideLoadingCover();
+            status("Cycling Today failed to load. Check the network and press Refresh.");
+
+        }
+
+        @Override
+        public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
+            if (!request.isForMainFrame()) {
+                return;
+            }
+            int statusCode = errorResponse == null ? 0 : errorResponse.getStatusCode();
+            logOnly("Main navigation HTTP status=" + statusCode);
+            if (statusCode >= 400) {
+                hideLoadingCover();
+                status("Cycling Today returned HTTP " + statusCode + ". Press Refresh to retry.");
+            }
+
+        }
+
+    }
+
+    @TargetApi(Build.VERSION_CODES.O)
+    private final class OreoCleanWebViewClient extends CleanWebViewClient {
+        @Override
+        public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+            boolean crashed = detail != null && detail.didCrash();
+            logOnly("WebView renderer ended. crashed=" + crashed + ". Recreating activity.");
+            handler.removeCallbacksAndMessages(null);
+            if (root != null) {
+                root.removeView(view);
+            }
+            if (webView == view) {
+                webView = null;
+            }
+            view.destroy();
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (!destroyed) {
+                        recreate();
+                    }
+                }
+            });
+            return true;
         }
     }
 
     private final class CleanChromeClient extends WebChromeClient {
         @Override
         public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
+            logOnly("Popup window blocked.");
             return false;
         }
 
         @Override
         public void onPermissionRequest(PermissionRequest request) {
             request.deny();
+            logOnly("Web permission request denied for privacy.");
+        }
+
+        @Override
+        public void onProgressChanged(WebView view, int newProgress) {
+            if (!cleanerReady && loadingText != null && loadingCover != null
+                    && loadingCover.getVisibility() == View.VISIBLE
+                    && cleanerPollAttempts < 2) {
+                loadingText.setText("Loading page... " + newProgress + "%\nThen locating the live player");
+            }
         }
 
         @Override
@@ -589,26 +1108,28 @@ public class MainActivity extends Activity {
             }
             customView = view;
             customViewCallback = callback;
+            controlsHiddenBeforeCustomView = controlsHidden;
+            if (loadingCover != null) {
+                loadingCover.setVisibility(View.GONE);
+            }
+            if (controlBar != null) {
+                controlBar.setVisibility(View.GONE);
+            }
+            if (webView != null) {
+                webView.setVisibility(View.GONE);
+            }
             root.addView(customView, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
-            webView.setVisibility(View.GONE);
+            customView.bringToFront();
             enterImmersiveMode();
+            logOnly("Player requested native full screen.");
         }
 
         @Override
         public void onHideCustomView() {
-            if (customView == null) {
-                return;
-            }
-            root.removeView(customView);
-            customView = null;
-            if (customViewCallback != null) {
-                customViewCallback.onCustomViewHidden();
-                customViewCallback = null;
-            }
-            webView.setVisibility(View.VISIBLE);
-            enterImmersiveMode();
+            hideCustomView();
+            logOnly("Player exited native full screen.");
         }
     }
 }
