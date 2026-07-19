@@ -18,6 +18,10 @@ Android WebView version of the Cycling Today clean player.
 
 The app keeps the public embedded player in its page context. It does not extract streams, bypass DRM, bypass access controls, or simulate ad interactions.
 
+## Proxy
+
+Use `Proxy` in the control bar to select Direct, HTTP, or SOCKS5 and enter a host and port. The setting is saved in the app's private preferences and applies only to this player's WebView. Proxy authentication is not supported.
+
 ## Build
 
 From this directory:

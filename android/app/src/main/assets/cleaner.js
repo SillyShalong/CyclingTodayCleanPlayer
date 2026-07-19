@@ -265,8 +265,10 @@ function hostOf(url) {
       document.body.style.cssText =
         'margin:0!important;padding:0!important;background:#000!important;transform-origin:0 0!important;overflow:visible!important;';
 
-      player.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture');
-      player.setAttribute('allowfullscreen', 'true');
+      // Preserve the publisher's iframe permissions and referrer behavior.
+      if (!player.hasAttribute('allowfullscreen')) {
+        player.setAttribute('allowfullscreen', 'true');
+      }
       window.scrollTo(0, 0);
 
       var rect = player.getBoundingClientRect();

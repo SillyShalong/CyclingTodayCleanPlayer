@@ -3,8 +3,10 @@ package com.lijialun.cyclingtoday;
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.graphics.Typeface;
@@ -15,6 +17,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.MotionEvent;
@@ -33,11 +36,18 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.Spinner;
 import android.widget.TextView;
+
+import androidx.webkit.ProxyConfig;
+import androidx.webkit.ProxyController;
+import androidx.webkit.WebViewFeature;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -55,17 +65,37 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class MainActivity extends Activity {
     private static final String SOURCE_URL = "https://cycling.today/";
+    private static final String PROXY_PREFERENCES = "proxy-settings";
+    private static final String PROXY_MODE_KEY = "mode";
+    private static final String PROXY_HOST_KEY = "host";
+    private static final String PROXY_PORT_KEY = "port";
+    private static final String PROXY_MODE_DIRECT = "Direct";
+    private static final String PROXY_MODE_HTTP = "HTTP";
+    private static final String PROXY_MODE_SOCKS5 = "SOCKS5";
+    private static final String[] PROXY_MODES = {
+            PROXY_MODE_DIRECT, PROXY_MODE_HTTP, PROXY_MODE_SOCKS5
+    };
 
     private static final int CONTROL_BAR_HEIGHT_DP = 68;
     private static final int MAX_VISIBLE_LOG_LINES = 3;
     private static final long PLAYER_FIRST_CHECK_DELAY_MILLIS = 8000L;
     private static final long PLAYER_SECOND_CHECK_DELAY_MILLIS = 12000L;
+    private static final long SOURCE_STALL_TIMEOUT_MILLIS = 30000L;
+    private static final int MAX_NETWORK_RECOVERY_ATTEMPTS = 2;
+    private static final long[] NETWORK_RECOVERY_DELAYS_MILLIS = {2500L, 6000L};
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Executor mainExecutor = new Executor() {
+        @Override
+        public void execute(Runnable command) {
+            handler.post(command);
+        }
+    };
     private final List<String> visibleLogLines = new ArrayList<>();
     private final AtomicInteger blockedRequestCount = new AtomicInteger();
 
@@ -80,11 +110,13 @@ public class MainActivity extends Activity {
     private WebChromeClient.CustomViewCallback customViewCallback;
     private String cleanerScript;
     private File logFile;
+    private SharedPreferences proxyPreferences;
 
     private boolean cleanerReady;
     private boolean cleanerPollScheduled;
     private boolean autoTapScheduled;
     private boolean autoFullScreenScheduled;
+    private boolean networkRecoveryScheduled;
 
     private boolean controlsHidden;
     private boolean controlsHiddenBeforeCustomView;
@@ -93,6 +125,7 @@ public class MainActivity extends Activity {
     private int manualTapIndex;
     private int cleanerPollAttempts;
     private int loadGeneration;
+    private int networkRecoveryAttempts;
 
     private static final Set<String> BLOCKED_HOSTS = new HashSet<>(Arrays.asList(
             "2mdn.net",
@@ -170,6 +203,7 @@ public class MainActivity extends Activity {
 
         logFile = new File(getFilesDir(), "last-run.log");
         resetLog();
+        proxyPreferences = getSharedPreferences(PROXY_PREFERENCES, MODE_PRIVATE);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(0xff000000);
@@ -181,7 +215,7 @@ public class MainActivity extends Activity {
         applyContentInsets();
 
         status("Starting Android player...");
-        loadSource("startup");
+        applySavedProxyAndLoad("startup");
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -208,7 +242,6 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-        settings.setUserAgentString(settings.getUserAgentString() + " CyclingTodayAndroidPlayer/2.0");
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
@@ -297,6 +330,12 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View view) {
                 openCastSettings();
+            }
+        });
+        addControlButton("Proxy", 82, new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                showProxySettings();
             }
         });
         fullscreenButton = addControlButton("Full Screen", 104, new View.OnClickListener() {
@@ -439,9 +478,17 @@ public class MainActivity extends Activity {
     }
 
     private void loadSource(String reason) {
+        loadSource(reason, true);
+    }
+
+    private void loadSource(String reason, boolean resetNetworkRecovery) {
         if (webView == null) {
             return;
         }
+        if (resetNetworkRecovery) {
+            networkRecoveryAttempts = 0;
+        }
+        networkRecoveryScheduled = false;
         loadGeneration++;
         final int generation = loadGeneration;
 
@@ -453,6 +500,48 @@ public class MainActivity extends Activity {
         webView.loadUrl(SOURCE_URL);
         scheduleCleanerPoll(200L);
         schedulePlayerWatchdog(generation);
+        scheduleStalledSourceRecovery(generation);
+    }
+
+    private void scheduleStalledSourceRecovery(final int generation) {
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (destroyed || generation != loadGeneration || cleanerReady) {
+                    return;
+                }
+                logOnly("Source page stalled before a player was detected.");
+                scheduleNetworkRecovery("page-load-timeout");
+            }
+        }, SOURCE_STALL_TIMEOUT_MILLIS);
+    }
+
+    private void scheduleNetworkRecovery(final String errorDescription) {
+        if (destroyed || webView == null || cleanerReady || networkRecoveryScheduled
+                || networkRecoveryAttempts >= MAX_NETWORK_RECOVERY_ATTEMPTS) {
+            return;
+        }
+
+        final int generation = loadGeneration;
+        final int attempt = ++networkRecoveryAttempts;
+        final long delay = NETWORK_RECOVERY_DELAYS_MILLIS[Math.min(
+                attempt - 1, NETWORK_RECOVERY_DELAYS_MILLIS.length - 1)];
+        networkRecoveryScheduled = true;
+        logOnly("Network recovery scheduled. error=" + errorDescription
+                + " attempt=" + attempt + "/" + MAX_NETWORK_RECOVERY_ATTEMPTS
+                + " delayMs=" + delay);
+        status("Connection closed. Retrying live page " + attempt + "/"
+                + MAX_NETWORK_RECOVERY_ATTEMPTS + "...");
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (destroyed || generation != loadGeneration || cleanerReady) {
+                    return;
+                }
+                loadSource("network recovery " + attempt + "/"
+                        + MAX_NETWORK_RECOVERY_ATTEMPTS, false);
+            }
+        }, delay);
     }
 
     private void resetCleanerState() {
@@ -847,7 +936,173 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void showProxySettings() {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(24), dp(8), dp(24), 0);
+
+        TextView note = new TextView(this);
+        note.setText("HTTP or SOCKS5 proxy for this player only. Proxy authentication is not supported.");
+        note.setTextSize(13f);
+        content.addView(note);
+
+        Spinner modeInput = new Spinner(this);
+        ArrayAdapter<String> modeAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_dropdown_item, PROXY_MODES);
+        modeInput.setAdapter(modeAdapter);
+        String currentMode = getProxyMode();
+        modeInput.setSelection(proxyModeIndex(currentMode));
+        content.addView(modeInput);
+
+        EditText hostInput = new EditText(this);
+        hostInput.setHint("Host or IP address");
+        hostInput.setSingleLine(true);
+        hostInput.setText(getProxyHost());
+        content.addView(hostInput);
+
+        EditText portInput = new EditText(this);
+        portInput.setHint("Port (HTTP default 80, SOCKS5 default 1080)");
+        portInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        portInput.setSingleLine(true);
+        portInput.setText(getProxyPort());
+        content.addView(portInput);
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Playback proxy")
+                .setView(content)
+                .setNegativeButton("Cancel", null)
+                .setNeutralButton("Disable", null)
+                .setPositiveButton("Save", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+                saveProxy(PROXY_MODE_DIRECT, "", "");
+                dialog.dismiss();
+                applySavedProxyAndLoad("proxy disabled");
+            });
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                String mode = String.valueOf(modeInput.getSelectedItem());
+                String host = hostInput.getText().toString().trim();
+                String port = portInput.getText().toString().trim();
+                if (!PROXY_MODE_DIRECT.equals(mode) && buildProxyRule(mode, host, port) == null) {
+                    hostInput.setError("Enter a valid host and port");
+                    return;
+                }
+                saveProxy(mode, host, port);
+                dialog.dismiss();
+                applySavedProxyAndLoad("proxy changed");
+            });
+        });
+        dialog.show();
+    }
+
+    private void saveProxy(String mode, String host, String port) {
+        proxyPreferences.edit()
+                .putString(PROXY_MODE_KEY, mode)
+                .putString(PROXY_HOST_KEY, host)
+                .putString(PROXY_PORT_KEY, port)
+                .apply();
+    }
+
+    private String getProxyMode() {
+        return proxyPreferences.getString(PROXY_MODE_KEY, PROXY_MODE_DIRECT);
+    }
+
+    private String getProxyHost() {
+        return proxyPreferences.getString(PROXY_HOST_KEY, "");
+    }
+
+    private String getProxyPort() {
+        return proxyPreferences.getString(PROXY_PORT_KEY, "");
+    }
+
+    private int proxyModeIndex(String mode) {
+        for (int index = 0; index < PROXY_MODES.length; index++) {
+            if (PROXY_MODES[index].equals(mode)) {
+                return index;
+            }
+        }
+        return 0;
+    }
+
+    private String buildProxyRule(String mode, String host, String portText) {
+        if (!PROXY_MODE_HTTP.equals(mode) && !PROXY_MODE_SOCKS5.equals(mode)) {
+            return null;
+        }
+        if (host.length() == 0 || host.contains("://") || host.contains("/")
+                || host.contains("@") || host.matches(".*\\s+.*")) {
+            return null;
+        }
+        int port;
+        try {
+            port = Integer.parseInt(portText);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+        if (port < 1 || port > 65535) {
+            return null;
+        }
+        String normalizedHost = host;
+        if (host.indexOf(':') >= 0 && !host.startsWith("[")) {
+            normalizedHost = "[" + host + "]";
+        }
+        String scheme = PROXY_MODE_HTTP.equals(mode) ? "http" : "socks";
+        return scheme + "://" + normalizedHost + ":" + port;
+    }
+
+    private void applySavedProxyAndLoad(final String reason) {
+        String mode = getProxyMode();
+        if (PROXY_MODE_DIRECT.equals(mode)) {
+            clearProxyAndLoad(reason);
+            return;
+        }
+        String rule = buildProxyRule(mode, getProxyHost(), getProxyPort());
+        if (rule == null) {
+            status("Proxy setting is incomplete. Open Proxy to correct it.");
+            return;
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            status("This Android WebView does not support app proxy settings.");
+            return;
+        }
+        try {
+            ProxyConfig config = new ProxyConfig.Builder().addProxyRule(rule).build();
+            ProxyController.getInstance().setProxyOverride(config, mainExecutor, new Runnable() {
+                @Override
+                public void run() {
+                    status(getProxyMode() + " proxy applied. Reloading player...");
+                    loadSource(reason);
+                }
+            });
+        } catch (IllegalArgumentException | UnsupportedOperationException exception) {
+            logOnly("Proxy configuration failed: " + exception.getMessage());
+            status("Proxy configuration failed. Check host and port.");
+        }
+    }
+
+    private void clearProxyAndLoad(final String reason) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            loadSource(reason);
+            return;
+        }
+        try {
+            ProxyController.getInstance().clearProxyOverride(mainExecutor, new Runnable() {
+                @Override
+                public void run() {
+                    if (!PROXY_MODE_DIRECT.equals(getProxyMode())) {
+                        return;
+                    }
+                    status("Direct connection enabled. Reloading player...");
+                    loadSource(reason);
+                }
+            });
+        } catch (UnsupportedOperationException exception) {
+            logOnly("Could not clear proxy override: " + exception.getMessage());
+            loadSource(reason);
+        }
+    }
     private boolean isAllowedTopLevel(Uri uri) {
+
 
         String host = uri.getHost();
         if (host == null) {
@@ -1031,6 +1286,10 @@ public class MainActivity extends Activity {
             }
             String description = error == null ? "unknown" : String.valueOf(error.getDescription());
             logOnly("Main navigation error: " + description);
+            scheduleNetworkRecovery(description);
+            if (networkRecoveryScheduled) {
+                return;
+            }
             hideLoadingCover();
             status("Cycling Today failed to load. Check the network and press Refresh.");
 

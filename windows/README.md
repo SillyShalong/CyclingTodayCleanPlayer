@@ -36,6 +36,10 @@ After the live iframe loads, the app activates the player's own bottom-right ful
 - `--no-block`
 - `--no-auto-click`
 
+## Proxy
+
+Use `Proxy` in the control bar to select Direct, HTTP, or SOCKS5 and provide a host and port. The setting is stored under `%LOCALAPPDATA%\CyclingTodayCleanPlayer\proxy-settings.txt` and the player restarts to apply it. It affects only this WebView2 player; proxy authentication is not supported.
+
 ## Cast to TV
 
 The Windows player has three casting modes:

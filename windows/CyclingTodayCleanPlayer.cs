@@ -24,6 +24,9 @@ internal static class Program
 internal sealed class CleanPlayerForm : Form
 {
     private const string SourcePageUrl = "https://cycling.today/";
+    private const string ProxyModeDirect = "Direct";
+    private const string ProxyModeHttp = "HTTP";
+    private const string ProxyModeSocks5 = "SOCKS5";
 
 
     private const int PlayerFirstCheckDelayMilliseconds = 8000;
@@ -61,6 +64,7 @@ internal sealed class CleanPlayerForm : Form
     private readonly WebView2 webView;
     private readonly HashSet<string> blockedHosts;
     private readonly string logPath;
+    private readonly string proxySettingsPath;
     private readonly bool enableCleaner;
     private readonly bool enableBlocking;
     private readonly bool enableAutoClick;
@@ -72,6 +76,7 @@ internal sealed class CleanPlayerForm : Form
     private Button miracastButton;
     private Button directCastButton;
     private Button autoCastButton;
+    private Button proxyButton;
     private Button reloadButton;
     private FormBorderStyle previousBorderStyle;
     private FormWindowState previousWindowState;
@@ -101,6 +106,9 @@ internal sealed class CleanPlayerForm : Form
     private string activeCastTargetUrl;
 
     private bool deviceSearchInProgress;
+    private string proxyMode = ProxyModeDirect;
+    private string proxyHost = String.Empty;
+    private string proxyPort = String.Empty;
 
     private sealed class CastDevice
     {
@@ -129,7 +137,12 @@ internal sealed class CleanPlayerForm : Form
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "CyclingTodayCleanPlayer",
             "last-run.log");
+        proxySettingsPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CyclingTodayCleanPlayer",
+            "proxy-settings.txt");
         ResetLog();
+        LoadProxySettings();
 
         System.Drawing.Icon appIcon = LoadAppIcon();
         if (appIcon != null)
@@ -170,7 +183,7 @@ internal sealed class CleanPlayerForm : Form
 
         FlowLayoutPanel buttons = new FlowLayoutPanel();
         buttons.Dock = DockStyle.Right;
-        buttons.Width = 550;
+        buttons.Width = 640;
         buttons.FlowDirection = FlowDirection.LeftToRight;
         buttons.WrapContents = false;
         buttons.Padding = new Padding(0, 12, 0, 0);
@@ -200,6 +213,12 @@ internal sealed class CleanPlayerForm : Form
         autoCastButton.Height = 34;
         autoCastButton.Click += delegate { CastToTv(true); };
 
+        proxyButton = new Button();
+        proxyButton.Text = "Proxy";
+        proxyButton.Width = 78;
+        proxyButton.Height = 34;
+        proxyButton.Click += delegate { ShowProxySettings(); };
+
         reloadButton = new Button();
         reloadButton.Text = "Refresh";
         reloadButton.Width = 100;
@@ -214,6 +233,7 @@ internal sealed class CleanPlayerForm : Form
         buttons.Controls.Add(miracastButton);
         buttons.Controls.Add(directCastButton);
         buttons.Controls.Add(autoCastButton);
+        buttons.Controls.Add(proxyButton);
         buttons.Controls.Add(reloadButton);
 
         statusLabel = new Label();
@@ -231,6 +251,224 @@ internal sealed class CleanPlayerForm : Form
         return panel;
     }
 
+    private string BuildWebViewArguments()
+    {
+        string arguments = "--autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI";
+        string proxyRule = BuildProxyRule(proxyMode, proxyHost, proxyPort);
+        if (!String.IsNullOrEmpty(proxyRule))
+        {
+            Log("WebView2 proxy enabled. mode=" + proxyMode);
+            arguments += " --proxy-server=" + proxyRule;
+        }
+        return arguments;
+    }
+
+    private void LoadProxySettings()
+    {
+        proxyMode = ProxyModeDirect;
+        proxyHost = String.Empty;
+        proxyPort = String.Empty;
+        if (!File.Exists(proxySettingsPath))
+        {
+            return;
+        }
+
+        try
+        {
+            foreach (string line in File.ReadAllLines(proxySettingsPath))
+            {
+                int separator = line.IndexOf('=');
+                if (separator < 1)
+                {
+                    continue;
+                }
+                string key = line.Substring(0, separator);
+                string value = line.Substring(separator + 1);
+                if (key == "mode") { proxyMode = value; }
+                if (key == "host") { proxyHost = value; }
+                if (key == "port") { proxyPort = value; }
+            }
+            if (!ProxyModeDirect.Equals(proxyMode) && BuildProxyRule(proxyMode, proxyHost, proxyPort) == null)
+            {
+                proxyMode = ProxyModeDirect;
+                proxyHost = String.Empty;
+                proxyPort = String.Empty;
+                Log("Invalid saved proxy settings were ignored.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("Could not load proxy settings: " + ex.Message);
+            proxyMode = ProxyModeDirect;
+            proxyHost = String.Empty;
+            proxyPort = String.Empty;
+        }
+    }
+
+    private void SaveProxySettings()
+    {
+        try
+        {
+            string directory = Path.GetDirectoryName(proxySettingsPath);
+            if (!String.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+            File.WriteAllLines(proxySettingsPath, new string[]
+            {
+                "mode=" + proxyMode,
+                "host=" + proxyHost,
+                "port=" + proxyPort
+            });
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("Could not save proxy settings. " + ex.Message, ex);
+        }
+    }
+
+    private string BuildProxyRule(string mode, string host, string portText)
+    {
+        if (ProxyModeDirect.Equals(mode))
+        {
+            return String.Empty;
+        }
+        if (!ProxyModeHttp.Equals(mode) && !ProxyModeSocks5.Equals(mode))
+        {
+            return null;
+        }
+        host = host == null ? String.Empty : host.Trim();
+        if (host.Length == 0 || host.IndexOf("://", StringComparison.Ordinal) >= 0
+            || host.IndexOf('/') >= 0 || host.IndexOf('@') >= 0
+            || host.IndexOfAny(new char[] { ' ', '\t', '\r', '\n' }) >= 0)
+        {
+            return null;
+        }
+        int port;
+        if (!Int32.TryParse(portText, NumberStyles.None, CultureInfo.InvariantCulture, out port)
+            || port < 1 || port > 65535)
+        {
+            return null;
+        }
+        if (host.IndexOf(':') >= 0 && !(host.StartsWith("[") && host.EndsWith("]")))
+        {
+            host = "[" + host + "]";
+        }
+        string scheme = ProxyModeHttp.Equals(mode) ? "http" : "socks5";
+        return scheme + "://" + host + ":" + port.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private void ShowProxySettings()
+    {
+        using (Form dialog = new Form())
+        {
+            dialog.Text = "Playback Proxy";
+            dialog.ClientSize = new Size(470, 250);
+            dialog.StartPosition = FormStartPosition.CenterParent;
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.MaximizeBox = false;
+            dialog.MinimizeBox = false;
+            dialog.ShowInTaskbar = false;
+
+            Label note = new Label();
+            note.Text = "Only this player uses the proxy. HTTP and SOCKS5 are supported; proxy authentication is not.";
+            note.AutoSize = false;
+            note.Size = new Size(430, 36);
+            note.Location = new Point(18, 14);
+
+            Label modeLabel = new Label();
+            modeLabel.Text = "Mode";
+            modeLabel.AutoSize = true;
+            modeLabel.Location = new Point(18, 64);
+            ComboBox modeInput = new ComboBox();
+            modeInput.DropDownStyle = ComboBoxStyle.DropDownList;
+            modeInput.Items.AddRange(new object[] { ProxyModeDirect, ProxyModeHttp, ProxyModeSocks5 });
+            modeInput.SelectedItem = proxyMode;
+            if (modeInput.SelectedIndex < 0) { modeInput.SelectedIndex = 0; }
+            modeInput.Size = new Size(125, 24);
+            modeInput.Location = new Point(115, 60);
+
+            Label hostLabel = new Label();
+            hostLabel.Text = "Host / IP";
+            hostLabel.AutoSize = true;
+            hostLabel.Location = new Point(18, 102);
+            TextBox hostInput = new TextBox();
+            hostInput.Text = proxyHost;
+            hostInput.Size = new Size(310, 24);
+            hostInput.Location = new Point(115, 98);
+
+            Label portLabel = new Label();
+            portLabel.Text = "Port";
+            portLabel.AutoSize = true;
+            portLabel.Location = new Point(18, 140);
+            TextBox portInput = new TextBox();
+            portInput.Text = proxyPort;
+            portInput.Size = new Size(125, 24);
+            portInput.Location = new Point(115, 136);
+
+            Button disableButton = new Button();
+            disableButton.Text = "Disable";
+            disableButton.Size = new Size(88, 34);
+            disableButton.Location = new Point(164, 194);
+            disableButton.Click += delegate
+            {
+                proxyMode = ProxyModeDirect;
+                proxyHost = String.Empty;
+                proxyPort = String.Empty;
+                SaveProxySettings();
+                dialog.DialogResult = DialogResult.OK;
+                dialog.Close();
+            };
+
+            Button cancelButton = new Button();
+            cancelButton.Text = "Cancel";
+            cancelButton.Size = new Size(88, 34);
+            cancelButton.Location = new Point(260, 194);
+            cancelButton.DialogResult = DialogResult.Cancel;
+
+            Button saveButton = new Button();
+            saveButton.Text = "Save && Restart";
+            saveButton.Size = new Size(110, 34);
+            saveButton.Location = new Point(356, 194);
+            saveButton.Click += delegate
+            {
+                string selectedMode = Convert.ToString(modeInput.SelectedItem, CultureInfo.InvariantCulture);
+                string selectedHost = hostInput.Text.Trim();
+                string selectedPort = portInput.Text.Trim();
+                if (!ProxyModeDirect.Equals(selectedMode)
+                    && BuildProxyRule(selectedMode, selectedHost, selectedPort) == null)
+                {
+                    MessageBox.Show(dialog, "Enter a valid host and port (1-65535).", "Invalid Proxy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                proxyMode = selectedMode;
+                proxyHost = selectedHost;
+                proxyPort = selectedPort;
+                SaveProxySettings();
+                dialog.DialogResult = DialogResult.OK;
+                dialog.Close();
+            };
+
+            dialog.Controls.Add(note);
+            dialog.Controls.Add(modeLabel);
+            dialog.Controls.Add(modeInput);
+            dialog.Controls.Add(hostLabel);
+            dialog.Controls.Add(hostInput);
+            dialog.Controls.Add(portLabel);
+            dialog.Controls.Add(portInput);
+            dialog.Controls.Add(disableButton);
+            dialog.Controls.Add(cancelButton);
+            dialog.Controls.Add(saveButton);
+            dialog.AcceptButton = saveButton;
+            dialog.CancelButton = cancelButton;
+
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                AddVisibleStatus("Proxy settings saved. Restarting player...");
+                Application.Restart();
+            }
+        }
+    }
     private void AddVisibleStatus(string message)
     {
         if (String.IsNullOrWhiteSpace(message))
@@ -272,7 +510,7 @@ internal sealed class CleanPlayerForm : Form
             Directory.CreateDirectory(userData);
 
             CoreWebView2EnvironmentOptions options = new CoreWebView2EnvironmentOptions(
-                "--autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI");
+                BuildWebViewArguments());
             CoreWebView2Environment environment =
                 await CoreWebView2Environment.CreateAsync(null, userData, options);
 
